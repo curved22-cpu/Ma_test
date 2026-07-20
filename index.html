@@ -2,26 +2,81 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ma Test</title>
-<style>
-  body {
-    margin: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-    background: #111;
-    color: #eee;
-    font-family: system-ui, sans-serif;
-    text-align: center;
-  }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Курьер</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div>
-    <h1>Ma Test</h1>
-    <p>Публикация работает. Игра появится здесь.</p>
+
+  <section id="menu-screen" class="screen">
+    <h1>Курьер</h1>
+    <p class="subtitle">Развози заказы, копи на технику, расширяй дело</p>
+    <div class="menu-buttons">
+      <button id="btn-new-game">Новая игра</button>
+      <button id="btn-continue">Продолжить</button>
+      <button id="btn-import">Загрузить файл сохранения</button>
+    </div>
+    <input type="file" id="import-file" accept="application/json" hidden>
+    <p id="menu-hint" class="hint"></p>
+  </section>
+
+  <section id="game-screen" class="screen hidden">
+    <header id="topbar">
+      <div class="topbar-row">
+        <span id="hud-money">0 ₽</span>
+        <span id="hud-time">День 1, 08:00</span>
+      </div>
+      <div class="bars">
+        <div class="bar-row">
+          <span class="bar-label">Усталость</span>
+          <div class="bar"><div id="bar-fatigue" class="bar-fill fatigue"></div></div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">Голод</span>
+          <div class="bar"><div id="bar-hunger" class="bar-fill hunger"></div></div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">Техника</span>
+          <div class="bar"><div id="bar-condition" class="bar-fill condition"></div></div>
+        </div>
+      </div>
+    </header>
+
+    <canvas id="map-canvas"></canvas>
+
+    <div id="status-panel" class="panel"></div>
+
+    <div id="problem-panel" class="panel problem hidden">
+      <p id="problem-text"></p>
+      <div class="problem-actions">
+        <button id="btn-repair">Починить</button>
+        <button id="btn-ignore">Ехать так</button>
+      </div>
+    </div>
+
+    <div class="actions-row">
+      <button id="btn-rest">Отдохнуть</button>
+      <button id="btn-eat">Поесть</button>
+      <button id="btn-save">Сохранить</button>
+      <button id="btn-export">Скачать сохранение</button>
+      <button id="btn-menu">В меню</button>
+    </div>
+
+    <h3>Доступные заказы</h3>
+    <ul id="job-list" class="job-list"></ul>
+
+    <h3>Журнал событий</h3>
+    <ul id="event-log" class="event-log"></ul>
+  </section>
+
+  <div id="offline-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Пока тебя не было</h2>
+      <p id="offline-summary"></p>
+      <button id="btn-offline-ok">Понятно</button>
+    </div>
   </div>
+
+  <script src="game.js"></script>
 </body>
 </html>
