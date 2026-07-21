@@ -122,6 +122,7 @@ VEHICLES.forEach(v => { VEHICLE_BY_ID[v.id] = v; });
 const CAT_GLYPH = { foot: '🚶', scooter: '🛴', bike: '🚲', moped: '🛵', motorcycle: '🏍️', car: '🚗', van: '🚐', truck: '🚚' };
 const CAT_LABEL = { foot: 'Пешком', scooter: 'Самокаты', bike: 'Велосипеды', moped: 'Мопеды и скутеры', motorcycle: 'Мотоциклы', car: 'Автомобили', van: 'Фургоны', truck: 'Грузовики' };
 const VEHICLE_CATS_ORDER = ['foot', 'scooter', 'bike', 'moped', 'motorcycle', 'car', 'van', 'truck'];
+const TIER_LABEL = { village: 'посёлок', small: 'малый город', big: 'крупный город', metro: 'мегаполис' };
 
 const FUEL_COST_PER_KM_RANGE = { gasoline: 2.6, diesel: 2.2, electric: 1.1, legs: 0 };
 
@@ -263,24 +264,107 @@ const RIVNOE_EDGES_RAW = [
 ];
 
 // ---------- country cities ----------
+// ~50 named settlements across 4 size tiers. Rivnoe is the hand-authored
+// starting village (kept exactly as before); everyone else is generated
+// from a tier "blueprint" so every point gets a real, logical name instead
+// of a placeholder like "Точка 6" — bus stations, markets, hospitals etc.,
+// scaled up or down depending on whether the settlement is a huge city or
+// a tiny village. Shop assortment is also gated by tier (see SETTLEMENT_TIER
+// and openShop()), so bigger vehicles are only sold in bigger settlements.
 
 const COUNTRY_NAME = 'Залесье';
+
+const SETTLEMENT_NAMES = {
+  metro: ['Новоград', 'Приморск', 'Златогорск', 'Каменнодольск', 'Верхнеречье', 'Южногорск', 'Красноград'],
+  big: ['Северск', 'Приволье', 'Светлоград', 'Новоселье', 'Раздолье', 'Спасск', 'Троицкое', 'Покровка', 'Верхнегорск', 'Зеленодольск'],
+  small: ['Заречье', 'Сосновка', 'Берёзово', 'Каменск', 'Озёрное', 'Морозовск', 'Ясногорск', 'Белово', 'Черемушкино', 'Гранитногорск', 'Солнцево', 'Крутоярск', 'Туманово', 'Береговое', 'Тополёво', 'Ивановка', 'Сергеевка', 'Журавлёво', 'Орловка', 'Волково'],
+  village: ['Горки', 'Луговое', 'Ключи', 'Дубровка', 'Тихвинка', 'Ольховка', 'Заводское', 'Родники', 'Вишнёвка', 'Малиновка', 'Полевое', 'Ельники'],
+};
+
+function seededShuffle(arr, rng) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Place all non-Rivnoe settlements on a jittered grid so they never overlap,
+// then shuffle which grid cell each tier lands in so big cities aren't
+// clustered in one corner of the country.
+function buildSettlementPositions() {
+  const placementRng = seededRandom(hashStr('settlement-grid'));
+  const cols = 8, rows = 7;
+  const cells = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) cells.push({ c, r });
+  }
+  const shuffledCells = seededShuffle(cells, placementRng);
+  const order = [
+    ...SETTLEMENT_NAMES.metro.map(name => ({ name, tier: 'metro' })),
+    ...SETTLEMENT_NAMES.big.map(name => ({ name, tier: 'big' })),
+    ...SETTLEMENT_NAMES.small.map(name => ({ name, tier: 'small' })),
+    ...SETTLEMENT_NAMES.village.map(name => ({ name, tier: 'village' })),
+  ];
+  const shuffledOrder = seededShuffle(order, placementRng);
+  const pitchX = 100 / cols, pitchY = 100 / rows;
+  return shuffledOrder.map((s, i) => {
+    const cell = shuffledCells[i];
+    const jx = (placementRng() - 0.5) * pitchX * 0.5;
+    const jy = (placementRng() - 0.5) * pitchY * 0.5;
+    const x = clamp(cell.c * pitchX + pitchX / 2 + jx, 5, 95);
+    const y = clamp(cell.r * pitchY + pitchY / 2 + jy, 5, 95);
+    return { id: `${s.tier}${i}`, name: s.name, tier: s.tier, x, y };
+  });
+}
+
 const COUNTRY_CITIES = [
-  { id: 'rivnoe', name: 'Ривное', x: 26, y: 58 },
-  { id: 'zarechye', name: 'Заречье', x: 54, y: 30 },
-  { id: 'sosnovka', name: 'Сосновка', x: 78, y: 60 },
-  { id: 'gorki', name: 'Горки', x: 18, y: 22 },
-  { id: 'lugovoe', name: 'Луговое', x: 48, y: 84 },
-  { id: 'berezovo', name: 'Берёзово', x: 86, y: 22 },
-  { id: 'kamensk', name: 'Каменск', x: 62, y: 68 },
+  { id: 'rivnoe', name: 'Ривное', x: 26, y: 58, tier: 'village' },
+  ...buildSettlementPositions(),
 ];
-const COUNTRY_ROAD_EDGES = [
-  ['rivnoe', 'zarechye'], ['rivnoe', 'gorki'], ['rivnoe', 'lugovoe'],
-  ['zarechye', 'gorki'], ['zarechye', 'berezovo'], ['zarechye', 'sosnovka'],
-  ['sosnovka', 'berezovo'], ['sosnovka', 'kamensk'], ['sosnovka', 'lugovoe'],
-  ['kamensk', 'lugovoe'],
-];
+const SETTLEMENT_TIER = {};
+COUNTRY_CITIES.forEach(c => { SETTLEMENT_TIER[c.id] = c.tier; });
+
 function cityMeta(id) { return COUNTRY_CITIES.find(c => c.id === id); }
+
+// Minimum spanning tree over all settlements (so the whole country is
+// guaranteed reachable) plus a handful of extra shortcut edges so the road
+// network has loops instead of being a single strict tree.
+function buildCountryRoadEdges() {
+  const rng = seededRandom(hashStr('country-roads'));
+  const nodes = COUNTRY_CITIES;
+  const parent = {};
+  nodes.forEach(n => { parent[n.id] = n.id; });
+  function find(id) { while (parent[id] !== id) { parent[id] = parent[parent[id]]; id = parent[id]; } return id; }
+  function union(a, b) { const ra = find(a), rb = find(b); if (ra === rb) return false; parent[ra] = rb; return true; }
+
+  const pairs = [];
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const dist = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].y - nodes[j].y);
+      pairs.push({ a: nodes[i].id, b: nodes[j].id, dist });
+    }
+  }
+  pairs.sort((p, q) => p.dist - q.dist);
+
+  const edges = [];
+  pairs.forEach(p => { if (union(p.a, p.b)) edges.push([p.a, p.b]); });
+
+  // A few extra shortcuts between geographically close settlements not
+  // already directly connected, so the network isn't a single fragile tree.
+  const existing = new Set(edges.map(([a, b]) => [a, b].sort().join('|')));
+  const shortcutCandidates = pairs.filter(p => p.dist < 16 && !existing.has([p.a, p.b].sort().join('|')));
+  const extraCount = Math.min(18, shortcutCandidates.length);
+  for (let i = 0; i < extraCount; i++) {
+    const idx = Math.floor(rng() * shortcutCandidates.length);
+    const pick = shortcutCandidates.splice(idx, 1)[0];
+    const key = [pick.a, pick.b].sort().join('|');
+    if (!existing.has(key)) { edges.push([pick.a, pick.b]); existing.add(key); }
+  }
+  return edges;
+}
+const COUNTRY_ROAD_EDGES = buildCountryRoadEdges();
 
 // Every city (incl. procedurally generated ones) gets: a namespaced point set,
 // a namespaced edge list, and exactly one "gate" point wired to the country
@@ -301,41 +385,96 @@ function addCityDef(cityId, rawPoints, rawEdges, gateAnchorLocalId) {
 
 addCityDef('rivnoe', RIVNOE_POINTS_RAW, RIVNOE_EDGES_RAW, 'home');
 
-function generateCityLayout(cityId) {
-  const rng = seededRandom(hashStr('layout:' + cityId));
-  const count = 7 + Math.floor(rng() * 3);
-  const fillerTypes = ['delivery', 'delivery', 'delivery', 'gas'];
-  const points = [
-    { id: 'p0', name: 'Центр', type: 'delivery', x: 45 + rng() * 10, y: 45 + rng() * 10 },
-    { id: 'p1', name: 'Кафе «Дорожное»', type: 'cafe', x: 20 + rng() * 20, y: 20 + rng() * 20 },
-    { id: 'p2', name: 'Магазин техники', type: 'shop', x: 65 + rng() * 20, y: 20 + rng() * 20 },
-    { id: 'p3', name: 'Мастерская', type: 'workshop', x: 65 + rng() * 20, y: 65 + rng() * 20 },
-  ];
-  for (let i = 4; i < count; i++) {
-    points.push({
-      id: `p${i}`, name: `Точка ${i}`,
-      type: pickSeeded(fillerTypes, rng),
-      x: 12 + rng() * 76, y: 12 + rng() * 76,
-    });
+// ---------- procedural settlement layouts (tiered, named, logical) ----------
+
+const SETTLEMENT_NAME_POOLS = {
+  market: ['Центральный рынок', 'Колхозный рынок', 'Рынок «Изобилие»', 'Городской рынок', 'Ярмарка'],
+  warehouse: ['Склад «Логист»', 'Оптовая база', 'Грузовой терминал', 'Логистический центр'],
+  bus: ['Автовокзал', 'Автостанция'],
+  busStop: ['Автобусная остановка', 'Остановка «Центральная»'],
+  hospital: ['Больница №1', 'Городская больница', 'Поликлиника №2'],
+  clinic: ['Фельдшерский пункт', 'Амбулатория'],
+  mall: ['ТЦ «Горизонт»', 'ТЦ «Галактика»', 'Торговый центр', 'Универмаг'],
+  district: ['Северный микрорайон', 'Южный микрорайон', 'Частный сектор', 'Новый квартал', 'Заречная слобода', 'Рабочий посёлок'],
+  park: ['Парк Победы', 'Центральный парк', 'Городской сад', 'Сквер Мира'],
+  cafe: ['Кафе «Уют»', 'Кафе «Дорожное»', 'Кафе «Ромашка»', 'Столовая №1', 'Кафе «Встреча»'],
+  workshop: ['Мастерская «Гайка»', 'Автосервис', 'СТО «Мотор»'],
+  gas: ['АЗС «Полный бак»', 'Заправка', 'АЗС №3'],
+  shop: ['Магазин техники «Скорость»', 'Мото-Авто Центр', 'Салон техники', 'Магазин «Колесо»'],
+};
+const SETTLEMENT_POINT_TYPE = {
+  market: 'delivery', warehouse: 'delivery', bus: 'delivery', busStop: 'delivery',
+  hospital: 'delivery', clinic: 'delivery', mall: 'delivery', district: 'delivery', park: 'delivery',
+  cafe: 'cafe', workshop: 'workshop', gas: 'gas', shop: 'shop',
+};
+// What each tier is built from: which delivery-ish points it gets (repeats
+// allowed for multiple districts/malls), how many cafes, and whether it has
+// a vehicle shop, workshop, or gas station at all.
+const TIER_BLUEPRINTS = {
+  village: { points: ['busStop', 'market'], cafes: 1, gasChance: 0.5, shop: false, workshop: false },
+  small: { points: ['bus', 'market', 'district'], cafes: 1, gasChance: 0.8, shop: true, workshop: false },
+  big: { points: ['bus', 'market', 'warehouse', 'district', 'district', 'mall'], cafes: 2, gasChance: 1, shop: true, workshop: true },
+  metro: { points: ['bus', 'market', 'warehouse', 'hospital', 'mall', 'mall', 'district', 'district', 'district', 'park'], cafes: 3, gasChance: 1, shop: true, workshop: true },
+};
+// Vehicle categories sold in each tier's shop — bigger settlements stock
+// bigger vehicles, giving cross-country travel an actual purpose.
+const TIER_SHOP_CATEGORIES = {
+  village: ['foot', 'scooter', 'bike', 'moped'],
+  small: ['foot', 'scooter', 'bike', 'moped', 'motorcycle'],
+  big: ['foot', 'scooter', 'bike', 'moped', 'motorcycle', 'car'],
+  metro: ['foot', 'scooter', 'bike', 'moped', 'motorcycle', 'car', 'van', 'truck'],
+};
+
+function pickUnusedName(kind, rng, used) {
+  const pool = SETTLEMENT_NAME_POOLS[kind];
+  for (let i = 0; i < pool.length; i++) {
+    const candidate = pickSeeded(pool, rng);
+    if (!used.has(candidate)) { used.add(candidate); return candidate; }
   }
+  const fallback = `${pool[0]} №${used.size + 1}`;
+  used.add(fallback);
+  return fallback;
+}
+
+function buildSettlementLayout(cityId, tier) {
+  const rng = seededRandom(hashStr('layout:' + cityId));
+  const blueprint = TIER_BLUEPRINTS[tier];
+  const used = new Set();
+  const points = [];
+  let n = 0;
+  const addPoint = (kind) => {
+    const name = pickUnusedName(kind, rng, used);
+    points.push({ id: `pt${n++}`, name, type: SETTLEMENT_POINT_TYPE[kind], x: 12 + rng() * 76, y: 12 + rng() * 76 });
+  };
+  blueprint.points.forEach(addPoint);
+  for (let i = 0; i < blueprint.cafes; i++) addPoint('cafe');
+  if (blueprint.shop) addPoint('shop');
+  if (blueprint.workshop) addPoint('workshop');
+  if (rng() < blueprint.gasChance) addPoint('gas');
+
   const edges = [];
   for (let i = 1; i < points.length; i++) edges.push([points[i - 1].id, points[i].id]);
-  const extra = 1 + Math.floor(rng() * 3);
+  const extra = 1 + Math.floor(rng() * 2);
   for (let i = 0; i < extra; i++) {
     const a = points[Math.floor(rng() * points.length)];
     const b = points[Math.floor(rng() * points.length)];
     if (a.id !== b.id) edges.push([a.id, b.id]);
   }
-  return { points, edges };
+  return { points, edges, anchorId: points[0].id };
 }
 
 COUNTRY_CITIES.filter(c => c.id !== 'rivnoe').forEach(c => {
-  const layout = generateCityLayout(c.id);
-  addCityDef(c.id, layout.points, layout.edges, 'p0');
+  const layout = buildSettlementLayout(c.id, c.tier);
+  addCityDef(c.id, layout.points, layout.edges, layout.anchorId);
 });
 
 function pointSpace(id) { return id.startsWith('hwy:') ? 'country' : id.split(':')[0]; }
 function pointById(id) { return WORLD_POINTS[id]; }
+function pointFullLabel(id) {
+  const pt = pointById(id);
+  const city = cityMeta(pointSpace(id));
+  return city ? `${pt.name} (${city.name})` : pt.name;
+}
 
 // ---------- winding roads: cached jittered polylines ----------
 
@@ -572,6 +711,7 @@ let lastFrameTs = null;
 let autosaveAccum = 0;
 let toasts = [];
 let uiSelectedPointId = null;
+let uiRouteJobId = null; // taken job whose full route is highlighted on the map
 let catchupBuffer = null;
 
 function newGameState() {
@@ -833,7 +973,7 @@ function takeJob(jobId) {
   if (idx === -1) return;
   const job = state.availableJobs.splice(idx, 1)[0];
   state.player.jobs.push(job);
-  log(`Взял заказ: ${job.itemName} (${pointById(job.fromId).name} → ${pointById(job.toId).name}), ${job.payout} ₽`);
+  log(`Взял заказ: ${job.itemName} (${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)}), ${job.payout} ₽`);
   ensureFittingJobExists();
 }
 
@@ -849,7 +989,7 @@ function pickUpJob(jobId) {
     return;
   }
   job.pickedUp = true;
-  log(`Забрал заказ: ${job.itemName} → ${pointById(job.toId).name}`);
+  log(`Забрал заказ: ${job.itemName} → ${pointFullLabel(job.toId)}`);
 }
 
 function lateDeliveryPenaltyFrac(job) {
@@ -1662,6 +1802,29 @@ function zoomToCity(cityId) {
   cameraTween = { fromX: camera.x, fromY: camera.y, fromZoom: camera.zoom, toX: meta.x, toY: meta.y, toZoom: cityFitZoom(), start: performance.now(), duration: 550 };
 }
 
+// Shows the full pickup-to-drop-off path for a taken job on the map. If the
+// whole route stays inside the city the player is currently in, frame that
+// city; otherwise the route crosses settlements, so pull back to the country
+// view (centered between the two endpoints) to show the whole trip.
+function showJobRoute(jobId) {
+  if (uiRouteJobId === jobId) { uiRouteJobId = null; return; }
+  const job = state.player.jobs.find(j => j.id === jobId);
+  if (!job) return;
+  uiRouteJobId = jobId;
+  const fromCity = pointSpace(job.fromId), toCity = pointSpace(job.toId);
+  const playerCity = pointSpace(state.player.positionId);
+  if (fromCity === toCity && fromCity === playerCity) {
+    zoomToCity(fromCity);
+    return;
+  }
+  const wa = pointToWorld(job.fromId), wb = pointToWorld(job.toId);
+  cameraTween = {
+    fromX: camera.x, fromY: camera.y, fromZoom: camera.zoom,
+    toX: (wa.x + wb.x) / 2, toY: (wa.y + wb.y) / 2, toZoom: countryFitZoom(),
+    start: performance.now(), duration: 650,
+  };
+}
+
 function updateCameraTween(ts) {
   if (!cameraTween) return;
   const t = clamp((ts - cameraTween.start) / cameraTween.duration, 0, 1);
@@ -1700,6 +1863,35 @@ function drawCityDetail(cityId, toPxWorld, w, h) {
   ctx.font = 'bold 12px system-ui'; ctx.fillStyle = '#eee'; ctx.textAlign = 'center';
   ctx.fillText(meta.name, lx, ly);
   ctx.textAlign = 'left';
+}
+
+function drawRouteHighlight(toPxWorld) {
+  if (!uiRouteJobId) return;
+  const job = state.player.jobs.find(j => j.id === uiRouteJobId);
+  if (!job) { uiRouteJobId = null; return; }
+  const path = shortestPath(job.fromId, job.toId);
+  ctx.save();
+  ctx.strokeStyle = '#f2c94a';
+  ctx.lineWidth = 3.5;
+  ctx.lineCap = 'round';
+  ctx.setLineDash([9, 6]);
+  for (let i = 0; i < path.length - 1; i++) {
+    const aId = path[i], bId = path[i + 1];
+    const space = edgeSpace(aId, bId);
+    const a = edgeCoord(aId, space), b = edgeCoord(bId, space);
+    const [seg, off] = edgeJitter(space);
+    const poly = getEdgePolyline(space, aId, bId, a, b, seg, off).map(pt => localToWorld(pt.x, pt.y, space));
+    strokePolyline(poly, toPxWorld);
+  }
+  ctx.setLineDash([]);
+  [{ id: job.fromId, color: '#4a9dd1' }, { id: job.toId, color: '#7fd17f' }].forEach(({ id, color }) => {
+    const w = pointToWorld(id);
+    const [x, y] = toPxWorld(w.x, w.y);
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#0d1015'; ctx.lineWidth = 2; ctx.stroke();
+  });
+  ctx.restore();
 }
 
 function drawWorld() {
@@ -1751,6 +1943,8 @@ function drawWorld() {
       ctx.textAlign = 'left';
     }
   });
+
+  drawRouteHighlight(toPxWorld);
 
   // Movers: the player today; the same drawing path will carry hired workers later.
   const live = livePlayerWorldPos();
@@ -2013,7 +2207,7 @@ function renderCargoPanel() {
     glyph.textContent = STORAGE_GLYPH[job.storage];
     const name = document.createElement('div');
     name.className = 'cargo-chip-name';
-    const statusText = job.pickedUp ? `→ ${pointById(job.toId).name}` : `забрать: ${pointById(job.fromId).name}`;
+    const statusText = job.pickedUp ? `→ ${pointFullLabel(job.toId)}` : `забрать: ${pointFullLabel(job.fromId)}`;
     let hintText = '';
     if (job.pickedUp && p.positionId !== job.toId) {
       if (p.positionId === job.fromId) {
@@ -2049,6 +2243,11 @@ function renderCargoPanel() {
         chip.appendChild(refuseBtn);
       }
     }
+    const routeBtn = document.createElement('button');
+    routeBtn.className = 'secondary-action';
+    routeBtn.textContent = uiRouteJobId === job.id ? '🗺️ Скрыть маршрут' : '🗺️ Показать маршрут';
+    routeBtn.onclick = () => { showJobRoute(job.id); lastCargoSignature = null; renderAll(); };
+    chip.appendChild(routeBtn);
     grid.appendChild(chip);
   });
   box.appendChild(grid);
@@ -2061,7 +2260,10 @@ function jobFitsVehicle(job) {
   const weightOk = cargoWeightKg() + job.weightKg <= spec.kg;
   const volumeOk = cargoVolumeL() + job.volumeL <= spec.l;
   const equipOk = hasRequiredEquipment(job.storage);
-  return weightOk && volumeOk && equipOk;
+  // Walking between settlements is technically possible (rest stops exist) but absurd —
+  // a job only "fits" on foot if pickup and drop-off are in the same settlement.
+  const rangeOk = spec.cat !== 'foot' || pointSpace(job.fromId) === pointSpace(job.toId);
+  return weightOk && volumeOk && equipOk && rangeOk;
 }
 
 function renderOrdersCount() {
@@ -2100,7 +2302,7 @@ function renderOrdersList() {
     const info = document.createElement('div');
     info.className = 'job-info';
     info.innerHTML = `<div>${STORAGE_GLYPH[job.storage]} <b>${job.itemName}</b> — ${job.weightKg} кг / ${formatVolumeM3(job.volumeL)}</div>` +
-      `<div class="job-sub">${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.distanceKm} км</div>` +
+      `<div class="job-sub">${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)} · ${job.distanceKm} км</div>` +
       `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!fits ? ' · не подходит' : ''}</div>`;
     const pay = document.createElement('span');
     pay.className = 'job-pay';
@@ -2138,7 +2340,7 @@ function renderStatusPanel() {
   } else if (p.status === 'moving') {
     const a = p.activity;
     const remainingKm = Math.max(0, a.totalKm - a.traveledKm);
-    text = `→ ${pointById(a.targetId).name} · осталось ${formatKm(remainingKm)} км`;
+    text = `→ ${pointFullLabel(a.targetId)} · осталось ${formatKm(remainingKm)} км`;
     if (a.problemPending) text += ' — стоит';
   }
   const nightTag = isNight() ? ' 🌙 ночь, скорость ниже' : '';
@@ -2279,10 +2481,15 @@ let shopTab = 'vehicles';
 function openShop() {
   el('shop-tab-vehicles').classList.toggle('active', shopTab === 'vehicles');
   el('shop-tab-equipment').classList.toggle('active', shopTab === 'equipment');
+  const citySpace = pointSpace(state.player.positionId);
+  const tier = SETTLEMENT_TIER[citySpace] || 'village';
+  const cityName = cityMeta(citySpace) ? cityMeta(citySpace).name : '';
+  const allowedCats = TIER_SHOP_CATEGORIES[tier];
+  el('shop-subtitle').textContent = `${cityName} (${TIER_LABEL[tier]}) — ассортимент зависит от размера города`;
   const list = el('shop-list');
   list.innerHTML = '';
   if (shopTab === 'vehicles') {
-    VEHICLE_CATS_ORDER.forEach(cat => {
+    VEHICLE_CATS_ORDER.filter(cat => allowedCats.includes(cat)).forEach(cat => {
       const header = document.createElement('li');
       header.className = 'shop-cat-header';
       header.textContent = `${CAT_GLYPH[cat]} ${CAT_LABEL[cat]}`;
