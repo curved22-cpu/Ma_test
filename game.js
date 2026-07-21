@@ -12,6 +12,12 @@ const NIGHT_START_MIN = 22 * 60;
 const NIGHT_END_MIN = 6 * 60;
 const NIGHT_SPEED_MULT = 0.7;
 const WEAR_PER_KM = 0.5;
+// Breakdown chance per trip scales with wear: worn-out technique is much more likely
+// to act up, which is the whole point — it rewards keeping condition/suspension up.
+const BREAKDOWN_BASE_CHANCE = 0.06; // at perfect (100%) condition
+const BREAKDOWN_WEAR_BONUS = 0.12;  // extra chance added at 0% condition
+const BREAKDOWN_SEVERE_BASE = 0.02; // severe (tow-worthy) share of triggered breakdowns at perfect condition
+const BREAKDOWN_SEVERE_WEAR_BONUS = 0.10; // extra severe share added at 0% condition
 const WORKSHOP_REPAIR_COST = 600;
 const UPGRADE_COST = 4000;
 const VEHICLE_RESALE_MAX_RATE = 0.55; // resale share of price at 100% condition
@@ -118,6 +124,13 @@ const VEHICLE_CATS_ORDER = ['foot', 'scooter', 'bike', 'moped', 'motorcycle', 'c
 
 const FUEL_COST_PER_KM_RANGE = { gasoline: 2.6, diesel: 2.2, electric: 1.1, legs: 0 };
 
+// A pedestrian has no wheels, chain, or frame — mishaps are physical, not mechanical.
+const BREAKDOWN_TYPES_FOOT = [
+  { id: 'blister', label: 'Стёр ногу мозолью', severity: 'minor', selfFixCost: 100, selfFixMinutes: 10, ignorePenalty: 1.1 },
+  { id: 'twisted_ankle', label: 'Подвернул ногу', severity: 'minor', selfFixCost: 150, selfFixMinutes: 12, ignorePenalty: 1.15 },
+  { id: 'lost_shoe', label: 'Порвался шнурок, слетел ботинок', severity: 'severe', towCost: 400, towMinutes: 30 },
+  { id: 'sprain', label: 'Серьёзно подвернул лодыжку', severity: 'severe', towCost: 1200, towMinutes: 60 },
+];
 const BREAKDOWN_TYPES_TWOWHEEL = [
   { id: 'flat_tire', label: 'Спустило колесо', severity: 'minor', selfFixCost: 250, selfFixMinutes: 15, ignorePenalty: 1.15 },
   { id: 'chain', label: 'Слетела цепь', severity: 'minor', selfFixCost: 150, selfFixMinutes: 8, ignorePenalty: 1.1 },
@@ -131,10 +144,12 @@ const BREAKDOWN_TYPES_MOTOR = [
   { id: 'transmission_fail', label: 'Отказала коробка передач', severity: 'severe', towCost: 15000, towMinutes: 90 },
 ];
 function breakdownPoolFor(vehicleSpec) {
-  return (vehicleSpec.cat === 'foot' || vehicleSpec.cat === 'scooter' || vehicleSpec.cat === 'bike')
+  if (vehicleSpec.cat === 'foot') return BREAKDOWN_TYPES_FOOT;
+  return (vehicleSpec.cat === 'scooter' || vehicleSpec.cat === 'bike')
     ? BREAKDOWN_TYPES_TWOWHEEL
     : BREAKDOWN_TYPES_MOTOR;
 }
+function isPersonalMishap(vehicleSpec) { return vehicleSpec.cat === 'foot'; }
 
 // ---------- equipment ----------
 
@@ -743,13 +758,17 @@ function generateFittingJob(remainingKg, remainingL) {
   };
 }
 
+const MIN_FITTING_JOBS = 2;
 function ensureFittingJobExists() {
-  if (state.availableJobs.some(j => jobFitsVehicle(j))) return;
   const spec = vehicleSpec();
   const remainingKg = spec.kg - cargoWeightKg();
   const remainingL = spec.l - cargoVolumeL();
   if (remainingKg < 0.3 || remainingL < 1) return; // vehicle already full — nothing to guarantee right now
-  state.availableJobs.push(generateFittingJob(remainingKg, remainingL));
+  let fittingCount = state.availableJobs.filter(j => jobFitsVehicle(j)).length;
+  while (fittingCount < MIN_FITTING_JOBS) {
+    state.availableJobs.push(generateFittingJob(remainingKg, remainingL));
+    fittingCount++;
+  }
 }
 
 function checkJobDeadlines() {
@@ -780,6 +799,7 @@ function takeJob(jobId) {
   const job = state.availableJobs.splice(idx, 1)[0];
   state.player.jobs.push(job);
   log(`Взял заказ: ${job.itemName} (${pointById(job.fromId).name} → ${pointById(job.toId).name}), ${job.payout} ₽`);
+  ensureFittingJobExists();
 }
 
 function pickUpJob(jobId) {
@@ -978,7 +998,7 @@ function beginTravelFromWaypoints(path) {
     path, targetId,
     traveledKm: 0,
     totalKm,
-    breakdownAt: Math.random() < 0.18 ? rand(0.25, 0.85) : null,
+    breakdownAt: Math.random() < breakdownOccurrenceChance() ? rand(0.25, 0.85) : null,
     breakdownTriggered: false,
     problemPending: false,
     problem: null,
@@ -1020,11 +1040,17 @@ function onArrive(targetId) {
   p.activity = null;
 }
 
+function breakdownOccurrenceChance() {
+  const conditionFactor = (100 - state.player.vehicle.condition) / 100;
+  return BREAKDOWN_BASE_CHANCE + conditionFactor * BREAKDOWN_WEAR_BONUS;
+}
+
 function triggerBreakdown(activity) {
   const p = state.player;
   const spec = vehicleSpec();
+  const personal = isPersonalMishap(spec);
   const conditionFactor = (100 - p.vehicle.condition) / 100;
-  const severeChance = 0.15 + conditionFactor * 0.5;
+  const severeChance = BREAKDOWN_SEVERE_BASE + conditionFactor * BREAKDOWN_SEVERE_WEAR_BONUS;
   const pool = breakdownPoolFor(spec);
   const candidates = Math.random() < severeChance
     ? pool.filter(b => b.severity === 'severe')
@@ -1032,14 +1058,16 @@ function triggerBreakdown(activity) {
   const type = pick(candidates);
   activity.problemPending = true;
   activity.problem = { kind: 'breakdown', typeId: type.id };
-  log(`Поломка в пути: ${type.label}`, { silent: true });
+  log(`${personal ? 'Проблема' : 'Поломка'} в пути: ${type.label}`, { silent: true });
   pushPendingAction({
     kind: 'breakdown',
     typeId: type.id,
     title: type.label,
     text: type.severity === 'minor'
-      ? `${type.label}. Можно починить на месте или ехать так, рискуя доломать технику.`
-      : `${type.label}. Своими силами не починить — нужно вызывать эвакуатор до мастерской.`,
+      ? `${type.label}. Можно ${personal ? 'обработать на месте' : 'починить на месте'} или ${personal ? 'идти' : 'ехать'} так, рискуя ${personal ? 'разболеться сильнее' : 'доломать технику'}.`
+      : personal
+        ? `${type.label}. Самому не справиться — придётся взять такси, чтобы добраться и отлежаться.`
+        : `${type.label}. Своими силами не починить — нужно вызывать эвакуатор до мастерской.`,
   });
 }
 
@@ -1064,17 +1092,18 @@ function resolvePendingAction(actionId, choice) {
 
   if (action.kind === 'breakdown') {
     const type = breakdownPoolFor(spec).find(t => t.id === action.typeId);
+    const personal = isPersonalMishap(spec);
     if (choice === 'selfFix') {
       state.money -= type.selfFixCost;
       state.player.vehicle.condition = clamp(state.player.vehicle.condition + 30, 0, 100);
-      log(`Починил на месте: ${type.label} (${type.selfFixCost} ₽)`);
+      log(personal ? `Обработал: ${type.label} (${type.selfFixCost} ₽)` : `Починил на месте: ${type.label} (${type.selfFixCost} ₽)`);
     } else if (choice === 'ignore') {
       activity.totalKm *= type.ignorePenalty;
-      log(`Поехал дальше, несмотря на «${type.label}»`);
+      log(personal ? `Пошёл дальше, несмотря на «${type.label}»` : `Поехал дальше, несмотря на «${type.label}»`);
     } else if (choice === 'tow') {
       state.money -= type.towCost;
       state.player.vehicle.condition = 100;
-      log(`Вызвал эвакуатор, починили в мастерской за ${type.towCost} ₽`);
+      log(personal ? `Взял такси, отлежался и восстановился (${type.towCost} ₽)` : `Вызвал эвакуатор, починили в мастерской за ${type.towCost} ₽`);
     }
   } else if (action.kind === 'exhausted') {
     // Roadside rest only relieves fatigue a little — it does NOT feed the courier.
@@ -1099,6 +1128,7 @@ function buyVehicle(vehicleId) {
   p.vehicles.push(newVehicle);
   p.vehicle = newVehicle;
   log(`Купил транспорт: ${v.name}`);
+  ensureFittingJobExists();
 }
 
 function switchVehicle(vehicleType) {
@@ -1111,6 +1141,7 @@ function switchVehicle(vehicleType) {
   if (cargoWeightKg() > spec.kg || cargoVolumeL() > spec.l) { toast('Текущий груз не влезет в эту технику'); return; }
   p.vehicle = target;
   log(`Пересел на: ${spec.name}`, { silent: true });
+  ensureFittingJobExists();
 }
 
 function vehicleResaleValue(veh) {
@@ -1394,7 +1425,6 @@ function drawVehicleMarker(cx, cy, angle, drawStyle, traveledKm, isProblem) {
   const wheelAngle = (traveledKm * 14) % (Math.PI * 2);
   ctx.save();
   ctx.translate(cx, cy);
-  ctx.rotate(angle);
 
   function wheel(wx, wy, r) {
     ctx.beginPath(); ctx.arc(wx, wy, r, 0, Math.PI * 2);
@@ -1407,13 +1437,37 @@ function drawVehicleMarker(cx, cy, angle, drawStyle, traveledKm, isProblem) {
   }
 
   if (drawStyle === 'foot') {
+    // A walking person must never render upside-down: skip the heading rotation
+    // entirely (head always up, feet always down) and just mirror left/right
+    // to face the direction of travel.
+    if (Math.cos(angle) < 0) ctx.scale(-1, 1);
+    const phase = traveledKm * 20;
+    const stride = Math.sin(phase);
+    const legSwing = stride * 3.4;
+    const armSwing = -stride * 2.6;
+    const bob = Math.abs(Math.cos(phase)) * 1.1;
+    const hipY = 1 - bob;
+    const shoulderY = -4 - bob;
+    const headY = -8 - bob;
+
+    ctx.strokeStyle = bodyColor;
     ctx.fillStyle = bodyColor;
-    ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill();
-    const stride = Math.sin(traveledKm * 20) * 3;
-    ctx.strokeStyle = bodyColor; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(-2, 3); ctx.lineTo(-2 - stride, 8); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(2, 3); ctx.lineTo(2 + stride, 8); ctx.stroke();
-  } else if (drawStyle === 'twowheel') {
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = 'round';
+
+    ctx.beginPath(); ctx.arc(0, headY, 2.4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0, headY + 2.3); ctx.lineTo(0, hipY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, shoulderY); ctx.lineTo(-armSwing, shoulderY + 3.6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, shoulderY); ctx.lineTo(armSwing, shoulderY + 3.6); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, hipY); ctx.lineTo(-legSwing, hipY + 5.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, hipY); ctx.lineTo(legSwing, hipY + 5.2); ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  ctx.rotate(angle);
+
+  if (drawStyle === 'twowheel') {
     wheel(-6, 0, 3.4);
     wheel(6, 0, 3.4);
     ctx.strokeStyle = bodyColor; ctx.lineWidth = 2;
@@ -2017,12 +2071,14 @@ function openProblemModal(action) {
     actionsBox.appendChild(b);
   };
   if (action.kind === 'breakdown') {
-    const type = breakdownPoolFor(vehicleSpec()).find(t => t.id === action.typeId);
+    const spec = vehicleSpec();
+    const personal = isPersonalMishap(spec);
+    const type = breakdownPoolFor(spec).find(t => t.id === action.typeId);
     if (type.severity === 'minor') {
-      addBtn(`Починить на месте — ${type.selfFixCost} ₽`, 'selfFix');
-      addBtn('Ехать так, рискуя', 'ignore');
+      addBtn(`${personal ? 'Обработать на месте' : 'Починить на месте'} — ${type.selfFixCost} ₽`, 'selfFix');
+      addBtn(personal ? 'Идти так, рискуя' : 'Ехать так, рискуя', 'ignore');
     } else {
-      addBtn(`Вызвать эвакуатор — ${type.towCost} ₽`, 'tow');
+      addBtn(`${personal ? 'Взять такси до дома' : 'Вызвать эвакуатор'} — ${type.towCost} ₽`, 'tow');
     }
   } else if (action.kind === 'exhausted') {
     addBtn('Отдохнуть на обочине', 'ignore');
