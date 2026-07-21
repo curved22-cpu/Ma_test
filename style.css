@@ -152,6 +152,7 @@ html, body { height: 100%; margin: 0; }
 .point-panel-buttons button { flex: 1; min-width: 120px; }
 
 #status-panel { border: 1px solid #2a3038; max-width: 320px; }
+.status-progress-track { margin-top: 7px; margin-bottom: 3px; }
 
 .notify-list { display: flex; flex-direction: column; gap: 8px; }
 .notify-card {

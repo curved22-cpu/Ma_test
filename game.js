@@ -168,27 +168,54 @@ const STORAGE_GLYPH = { normal: '📦', chilled: '🧊', frozen: '❄️', fragi
 
 // ---------- items & urgency ----------
 
+// `sources`, when present, restricts which delivery points this item can be picked up
+// from (only meaningful for Rivnoe's named points — generated cities' generic points
+// aren't in any list, so templatesFor() falls back to the unfiltered pool for them).
+// This is what keeps "frozen fish" off the bus station and onto the market/warehouse.
+const RIVNOE_WAREHOUSE = 'rivnoe:warehouse';
+const RIVNOE_MALL = 'rivnoe:mall';
+const RIVNOE_BUS = 'rivnoe:bus';
+const RIVNOE_HOSPITAL = 'rivnoe:hospital';
+const RIVNOE_MARKET = 'rivnoe:market';
+const RIVNOE_DISTRICT = 'rivnoe:district';
+
 const ITEM_TEMPLATES = [
-  { name: 'Коробка с одеждой', storage: 'normal', weightKg: [1, 4], volumeL: [8, 20], urgency: ['none', 'standard'] },
+  { name: 'Коробка с одеждой', storage: 'normal', weightKg: [1, 4], volumeL: [8, 20], urgency: ['none', 'standard'], sources: [RIVNOE_MALL, RIVNOE_DISTRICT] },
   { name: 'Книги', storage: 'normal', weightKg: [2, 8], volumeL: [5, 15], urgency: ['none'] },
-  { name: 'Электроника (гаджеты)', storage: 'fragile', weightKg: [0.3, 2], volumeL: [1, 5], urgency: ['standard', 'urgent'] },
-  { name: 'Ноутбук', storage: 'fragile', weightKg: [1.5, 3], volumeL: [3, 6], urgency: ['standard', 'urgent'] },
-  { name: 'Торт на заказ', storage: 'chilled', weightKg: [1, 3], volumeL: [8, 20], urgency: ['urgent'] },
-  { name: 'Мороженое (опт)', storage: 'frozen', weightKg: [3, 10], volumeL: [10, 25], urgency: ['urgent'] },
-  { name: 'Замороженные полуфабрикаты', storage: 'frozen', weightKg: [5, 15], volumeL: [15, 35], urgency: ['standard'] },
-  { name: 'Свежие продукты', storage: 'chilled', weightKg: [2, 10], volumeL: [10, 30], urgency: ['standard', 'urgent'] },
-  { name: 'Букет цветов', storage: 'fragile', weightKg: [0.5, 2], volumeL: [5, 15], urgency: ['urgent'] },
-  { name: 'Лекарства', storage: 'chilled', weightKg: [0.2, 2], volumeL: [1, 5], urgency: ['urgent'] },
-  { name: 'Документы', storage: 'valuable', weightKg: [0.1, 0.5], volumeL: [0.5, 1], urgency: ['urgent', 'standard'] },
-  { name: 'Ювелирные изделия', storage: 'valuable', weightKg: [0.1, 1], volumeL: [0.5, 2], urgency: ['standard'] },
-  { name: 'Кот в переноске', storage: 'live_small', weightKg: [3, 6], volumeL: [15, 25], urgency: ['standard'] },
-  { name: 'Небольшая собака', storage: 'live_small', weightKg: [5, 12], volumeL: [20, 35], urgency: ['standard'] },
-  { name: 'Крупная собака', storage: 'live_large', weightKg: [15, 40], volumeL: [40, 70], urgency: ['standard'] },
-  { name: 'Стройматериалы (мешки смеси)', storage: 'normal', weightKg: [20, 60], volumeL: [20, 50], urgency: ['none'] },
-  { name: 'Мебель (разобранная)', storage: 'normal', weightKg: [30, 120], volumeL: [100, 400], urgency: ['none', 'standard'] },
-  { name: 'Бытовая техника', storage: 'fragile', weightKg: [5, 40], volumeL: [20, 100], urgency: ['standard'] },
-  { name: 'Пицца/готовая еда', storage: 'chilled', weightKg: [1, 4], volumeL: [5, 15], urgency: ['urgent'] },
-  { name: 'Автозапчасти', storage: 'normal', weightKg: [2, 25], volumeL: [3, 30], urgency: ['standard', 'none'] },
+  { name: 'Электроника (гаджеты)', storage: 'fragile', weightKg: [0.3, 2], volumeL: [1, 5], urgency: ['standard', 'urgent'], sources: [RIVNOE_MALL] },
+  { name: 'Ноутбук', storage: 'fragile', weightKg: [1.5, 3], volumeL: [3, 6], urgency: ['standard', 'urgent'], sources: [RIVNOE_MALL] },
+  { name: 'Торт на заказ', storage: 'chilled', weightKg: [1, 3], volumeL: [8, 20], urgency: ['urgent'], sources: [RIVNOE_MALL, RIVNOE_DISTRICT] },
+  { name: 'Мороженое (опт)', storage: 'frozen', weightKg: [3, 10], volumeL: [10, 25], urgency: ['urgent'], sources: [RIVNOE_WAREHOUSE, RIVNOE_MARKET] },
+  { name: 'Замороженные полуфабрикаты', storage: 'frozen', weightKg: [5, 15], volumeL: [15, 35], urgency: ['standard'], sources: [RIVNOE_WAREHOUSE, RIVNOE_MARKET] },
+  { name: 'Мороженая рыба', storage: 'frozen', weightKg: [3, 12], volumeL: [8, 20], urgency: ['standard'], sources: [RIVNOE_MARKET, RIVNOE_WAREHOUSE] },
+  { name: 'Свежая рыба', storage: 'chilled', weightKg: [1, 6], volumeL: [3, 10], urgency: ['urgent', 'standard'], sources: [RIVNOE_MARKET] },
+  { name: 'Свежие продукты', storage: 'chilled', weightKg: [2, 10], volumeL: [10, 30], urgency: ['standard', 'urgent'], sources: [RIVNOE_MARKET] },
+  { name: 'Мёд и варенье', storage: 'normal', weightKg: [1, 5], volumeL: [2, 8], urgency: ['none', 'standard'], sources: [RIVNOE_MARKET] },
+  { name: 'Комнатное растение', storage: 'fragile', weightKg: [1, 4], volumeL: [5, 15], urgency: ['standard'], sources: [RIVNOE_MARKET, RIVNOE_DISTRICT] },
+  { name: 'Букет цветов', storage: 'fragile', weightKg: [0.5, 2], volumeL: [5, 15], urgency: ['urgent'], sources: [RIVNOE_MARKET, RIVNOE_MALL] },
+  { name: 'Лекарства', storage: 'chilled', weightKg: [0.2, 2], volumeL: [1, 5], urgency: ['urgent'], sources: [RIVNOE_HOSPITAL] },
+  { name: 'Медицинские анализы', storage: 'chilled', weightKg: [0.1, 0.5], volumeL: [0.5, 2], urgency: ['urgent'], sources: [RIVNOE_HOSPITAL] },
+  { name: 'Документы', storage: 'valuable', weightKg: [0.1, 0.5], volumeL: [0.5, 1], urgency: ['urgent', 'standard'], sources: [RIVNOE_BUS, RIVNOE_HOSPITAL, RIVNOE_DISTRICT] },
+  { name: 'Посылка (передача с автобуса)', storage: 'normal', weightKg: [0.5, 5], volumeL: [2, 15], urgency: ['standard', 'urgent'], sources: [RIVNOE_BUS] },
+  { name: 'Чемодан пассажира', storage: 'normal', weightKg: [5, 20], volumeL: [30, 60], urgency: ['urgent', 'standard'], sources: [RIVNOE_BUS] },
+  { name: 'Ювелирные изделия', storage: 'valuable', weightKg: [0.1, 1], volumeL: [0.5, 2], urgency: ['standard'], sources: [RIVNOE_MALL] },
+  { name: 'Кот в переноске', storage: 'live_small', weightKg: [3, 6], volumeL: [15, 25], urgency: ['standard'], sources: [RIVNOE_DISTRICT] },
+  { name: 'Небольшая собака', storage: 'live_small', weightKg: [5, 12], volumeL: [20, 35], urgency: ['standard'], sources: [RIVNOE_DISTRICT] },
+  { name: 'Крупная собака', storage: 'live_large', weightKg: [15, 40], volumeL: [40, 70], urgency: ['standard'], sources: [RIVNOE_DISTRICT] },
+  { name: 'Аквариумные рыбки', storage: 'live_small', weightKg: [1, 3], volumeL: [5, 15], urgency: ['urgent'], sources: [RIVNOE_MARKET] },
+  { name: 'Корм для животных', storage: 'normal', weightKg: [5, 20], volumeL: [10, 30], urgency: ['none', 'standard'], sources: [RIVNOE_MARKET, RIVNOE_WAREHOUSE] },
+  { name: 'Стройматериалы (мешки смеси)', storage: 'normal', weightKg: [20, 60], volumeL: [20, 50], urgency: ['none'], sources: [RIVNOE_WAREHOUSE] },
+  { name: 'Садовый инвентарь', storage: 'normal', weightKg: [3, 15], volumeL: [10, 40], urgency: ['none', 'standard'], sources: [RIVNOE_WAREHOUSE, RIVNOE_MARKET] },
+  { name: 'Мебель (разобранная)', storage: 'normal', weightKg: [30, 120], volumeL: [100, 400], urgency: ['none', 'standard'], sources: [RIVNOE_WAREHOUSE, RIVNOE_DISTRICT] },
+  { name: 'Бытовая техника', storage: 'fragile', weightKg: [5, 40], volumeL: [20, 100], urgency: ['standard'], sources: [RIVNOE_MALL, RIVNOE_WAREHOUSE] },
+  { name: 'Автозапчасти', storage: 'normal', weightKg: [2, 25], volumeL: [3, 30], urgency: ['standard', 'none'], sources: [RIVNOE_WAREHOUSE] },
+  { name: 'Шины для авто', storage: 'normal', weightKg: [8, 25], volumeL: [30, 60], urgency: ['none', 'standard'], sources: [RIVNOE_WAREHOUSE] },
+  { name: 'Пицца/готовая еда', storage: 'chilled', weightKg: [1, 4], volumeL: [5, 15], urgency: ['urgent'], sources: [RIVNOE_MALL, RIVNOE_DISTRICT] },
+  { name: 'Домашняя выпечка', storage: 'normal', weightKg: [1, 3], volumeL: [5, 12], urgency: ['urgent', 'standard'], sources: [RIVNOE_DISTRICT] },
+  { name: 'Постельное бельё', storage: 'normal', weightKg: [1, 5], volumeL: [5, 20], urgency: ['none', 'standard'], sources: [RIVNOE_MALL] },
+  { name: 'Обувь', storage: 'normal', weightKg: [0.5, 3], volumeL: [3, 10], urgency: ['none', 'standard'], sources: [RIVNOE_MALL] },
+  { name: 'Сувениры', storage: 'fragile', weightKg: [0.3, 2], volumeL: [2, 8], urgency: ['none', 'standard'], sources: [RIVNOE_MALL, RIVNOE_MARKET] },
+  { name: 'Велозапчасти', storage: 'normal', weightKg: [1, 8], volumeL: [3, 15], urgency: ['none', 'standard'], sources: [RIVNOE_WAREHOUSE, RIVNOE_MALL] },
 ];
 
 const URGENCY_LEVELS = {
@@ -571,6 +598,7 @@ function newGameState() {
       warnedHunger: false,
       warnedFatigue: false,
       warnedDebt: false,
+      offeredFoodDelivery: false,
     },
     availableJobs: [],
     eventLog: [],
@@ -692,9 +720,14 @@ function pickJobEndpoints() {
   return { fromId, toId };
 }
 
+function templatesFor(fromId) {
+  const compatible = ITEM_TEMPLATES.filter(t => !t.sources || t.sources.includes(fromId));
+  return compatible.length ? compatible : ITEM_TEMPLATES;
+}
+
 function generateJob() {
   const { fromId, toId } = pickJobEndpoints();
-  const template = pick(ITEM_TEMPLATES);
+  const template = pick(templatesFor(fromId));
   const weightKg = Math.round(rand(template.weightKg[0], template.weightKg[1]) * 10) / 10;
   const volumeL = Math.round(rand(template.volumeL[0], template.volumeL[1]));
   const urgencyKey = pick(template.urgency);
@@ -732,7 +765,8 @@ function generateFittingJob(remainingKg, remainingL) {
   let toId = pick(cityPts), guard = 0;
   while (toId === fromId && guard++ < 20) toId = pick(cityPts);
 
-  const normalTemplates = ITEM_TEMPLATES.filter(t => t.storage === 'normal');
+  const normalTemplatesHere = ITEM_TEMPLATES.filter(t => t.storage === 'normal' && (!t.sources || t.sources.includes(fromId)));
+  const normalTemplates = normalTemplatesHere.length ? normalTemplatesHere : ITEM_TEMPLATES.filter(t => t.storage === 'normal');
   const template = pick(normalTemplates);
   const maxWeight = Math.min(template.weightKg[1], remainingKg);
   const minWeight = Math.min(template.weightKg[0], maxWeight);
@@ -881,17 +915,54 @@ const EAT_OPTIONS = [
   { id: 'meal', label: 'Плотно поесть', minutes: 35, hungerRelief: 100 },
 ];
 const EAT_PRICE_CAFE = { snack: 150, meal: 350 };
+const FOOD_DELIVERY_SURCHARGE = 0.5; // on top of the nearest cafe's regular meal price
+
+function foodDeliveryPrice() { return Math.round(EAT_PRICE_CAFE.meal * (1 + FOOD_DELIVERY_SURCHARGE)); }
+
+function orderFoodDelivery() {
+  const price = foodDeliveryPrice();
+  if (state.money < price) { toast('Не хватает денег на доставку еды'); return; }
+  state.money -= price;
+  state.player.hunger = clamp(state.player.hunger - EAT_OPTIONS.find(o => o.id === 'meal').hungerRelief, 0, 100);
+  log(`Заказал доставку еды прямо в пути — ${price} ₽`);
+}
+
+function offerFoodDelivery() {
+  pushPendingAction({
+    kind: 'hungry',
+    title: 'Проголодался в пути',
+    text: `Живот совсем подводит. Можно заказать доставку еды прямо сюда — дороже, чем в кафе (доставка +${Math.round(FOOD_DELIVERY_SURCHARGE * 100)}%), но не придётся останавливаться и искать кафе.`,
+  });
+}
 const SLEEP_OPTIONS = [
   { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30 },
   { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, fatigueRelief: 70 },
   { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, fatigueRelief: 100 },
 ];
 const IDLE_REST_OPTION = { id: 'breathe', label: 'Просто отдохнуть, не ложась', minutes: 20, fatigueRelief: 10 };
+// Cutting rest/food short only credits a fraction of the elapsed time's benefit,
+// on top of that fraction already being less than the full plan — the double
+// shortfall is the "didn't get enough sleep/food" penalty.
+const INTERRUPT_PENALTY_FACTOR = 0.75;
 
 function cancelCurrentAction() {
   const p = state.player;
-  if (p.status === 'resting' || p.status === 'eating') {
-    p.status = 'idle'; p.restPlan = null; p.eatPlan = null; p.restElapsed = 0; p.eatElapsed = 0;
+  if (p.status === 'resting' && p.restPlan) {
+    const fraction = clamp(p.restElapsed / p.restPlan.totalMinutes, 0, 1);
+    if (fraction > 0) {
+      const relief = Math.round(p.restPlan.fatigueRelief * fraction * INTERRUPT_PENALTY_FACTOR);
+      p.fatigue = clamp(p.fatigue - relief, 0, 100);
+      log(`Прервал отдых (${p.restPlan.label}), не доспал — восстановил ${relief} энергии из ${p.restPlan.fatigueRelief}`, { silent: true });
+    }
+    p.status = 'idle'; p.restPlan = null; p.restElapsed = 0;
+  } else if (p.status === 'eating' && p.eatPlan) {
+    const fraction = clamp(p.eatElapsed / p.eatPlan.totalMinutes, 0, 1);
+    if (fraction > 0) {
+      const relief = Math.round(p.eatPlan.hungerRelief * fraction * INTERRUPT_PENALTY_FACTOR);
+      p.hunger = clamp(p.hunger - relief, 0, 100);
+      log(`Прервал приём пищи (${p.eatPlan.label}), не доел — утолил ${relief} голода из ${p.eatPlan.hungerRelief}`, { silent: true });
+    }
+    p.status = 'idle'; p.eatPlan = null; p.eatElapsed = 0;
   }
 }
 
@@ -1087,6 +1158,14 @@ function resolvePendingAction(actionId, choice) {
   const idx = state.pendingActions.findIndex(a => a.id === actionId);
   if (idx === -1) return;
   const action = state.pendingActions[idx];
+
+  // Not tied to a blocked travel activity — the courier keeps moving either way.
+  if (action.kind === 'hungry') {
+    if (choice === 'deliver') orderFoodDelivery();
+    state.pendingActions.splice(idx, 1);
+    return;
+  }
+
   const activity = state.player.activity;
   if (!activity || !activity.problemPending) { state.pendingActions.splice(idx, 1); return; }
   const spec = vehicleSpec();
@@ -1107,9 +1186,14 @@ function resolvePendingAction(actionId, choice) {
       log(personal ? `Взял такси, отлежался и восстановился (${type.towCost} ₽)` : `Вызвал эвакуатор, починили в мастерской за ${type.towCost} ₽`);
     }
   } else if (action.kind === 'exhausted') {
-    // Roadside rest only relieves fatigue a little — it does NOT feed the courier.
-    state.player.fatigue = 40;
-    log('Отдохнул на обочине, силы немного вернулись, но есть по-прежнему хочется');
+    if (choice === 'deliver') {
+      orderFoodDelivery();
+      log('Заказал доставку еды на обочину, пока стоял без сил', { silent: true });
+    } else {
+      // Roadside rest only relieves fatigue a little — it does NOT feed the courier.
+      state.player.fatigue = 40;
+      log('Отдохнул на обочине, силы немного вернулись, но есть по-прежнему хочется');
+    }
   }
 
   activity.problemPending = false;
@@ -1236,6 +1320,10 @@ function simulateTick(dt, summary) {
       a.traveledKm = clamp(a.traveledKm + kmThisTick, 0, a.totalKm);
       p.fatigue = clamp(p.fatigue + spec.fat * kmThisTick, 0, 100);
       p.hunger = clamp(p.hunger + HUNGER_RATE_MOVING * dt, 0, 100);
+      if (p.hunger >= 90 && p.hunger < 100 && !p.offeredFoodDelivery) {
+        p.offeredFoodDelivery = true;
+        offerFoodDelivery();
+      }
       p.vehicle.condition = clamp(p.vehicle.condition - kmThisTick * WEAR_PER_KM, 0, 100);
       if (spec.fuel !== 'legs') p.vehicle.fuel = clamp(p.vehicle.fuel - kmThisTick, 0, spec.tank);
 
@@ -1274,7 +1362,7 @@ function simulateTick(dt, summary) {
   }
 
   if (p.hunger >= 90 && !p.warnedHunger) { p.warnedHunger = true; toast('Курьер сильно голоден — пора поесть'); }
-  if (p.hunger < 80) p.warnedHunger = false;
+  if (p.hunger < 80) { p.warnedHunger = false; p.offeredFoodDelivery = false; }
   if (p.fatigue >= 90 && !p.warnedFatigue) { p.warnedFatigue = true; toast('Курьер сильно устал — пора отдохнуть'); }
   if (p.fatigue < 80) p.warnedFatigue = false;
 
@@ -1442,14 +1530,17 @@ function drawVehicleMarker(cx, cy, angle, drawStyle, traveledKm, isProblem) {
     // entirely (head always up, feet always down) and just mirror left/right
     // to face the direction of travel.
     if (Math.cos(angle) < 0) ctx.scale(-1, 1);
+    // The road passes through the feet, not the torso: y=0 is the ground contact
+    // point, and the whole figure is built upward from there (negative y).
     const phase = traveledKm * 20;
     const stride = Math.sin(phase);
     const legSwing = stride * 3.4;
     const armSwing = -stride * 2.6;
     const bob = Math.abs(Math.cos(phase)) * 1.1;
-    const hipY = 1 - bob;
-    const shoulderY = -4 - bob;
-    const headY = -8 - bob;
+    const feetY = 0;
+    const hipY = -6.2 - bob;
+    const shoulderY = hipY - 4;
+    const headY = shoulderY - 4;
 
     ctx.strokeStyle = bodyColor;
     ctx.fillStyle = bodyColor;
@@ -1460,8 +1551,8 @@ function drawVehicleMarker(cx, cy, angle, drawStyle, traveledKm, isProblem) {
     ctx.beginPath(); ctx.moveTo(0, headY + 2.3); ctx.lineTo(0, hipY); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0, shoulderY); ctx.lineTo(-armSwing, shoulderY + 3.6); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0, shoulderY); ctx.lineTo(armSwing, shoulderY + 3.6); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, hipY); ctx.lineTo(-legSwing, hipY + 5.2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, hipY); ctx.lineTo(legSwing, hipY + 5.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, hipY); ctx.lineTo(-legSwing, feetY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, hipY); ctx.lineTo(legSwing, feetY); ctx.stroke();
     ctx.restore();
     return;
   }
@@ -1796,6 +1887,13 @@ function formatDeadline(ms) {
   return `${h} ч ${m} мин`;
 }
 
+function formatMinutesDuration(mins) {
+  const m = Math.max(0, Math.round(mins));
+  if (m < 60) return `${m} мин`;
+  const h = Math.floor(m / 60), mm = m % 60;
+  return mm > 0 ? `${h} ч ${mm} мин` : `${h} ч`;
+}
+
 let lastPointPanelSignature = null;
 function renderPointPanel() {
   const panel = el('point-panel');
@@ -2016,21 +2114,48 @@ function renderOrdersList() {
   });
 }
 
+let lastStatusSignature = null;
 function renderStatusPanel() {
   const panel = el('status-panel');
   const p = state.player;
   let text;
-  if (p.status === 'idle') text = `Стоит на месте (${pointById(p.positionId).name}), готов ехать`;
-  else if (p.status === 'resting') text = `Отдыхает: ${p.restPlan ? p.restPlan.label : ''}`;
-  else if (p.status === 'eating') text = `Ест: ${p.eatPlan ? p.eatPlan.label : ''}`;
-  else if (p.status === 'moving') {
+  let progressFraction = null;
+  let remainingLabel = '';
+  if (p.status === 'idle') {
+    text = `Стоит на месте (${pointById(p.positionId).name}), готов ехать`;
+  } else if (p.status === 'resting') {
+    text = `Отдыхает: ${p.restPlan ? p.restPlan.label : ''}`;
+    if (p.restPlan) {
+      progressFraction = clamp(p.restElapsed / p.restPlan.totalMinutes, 0, 1);
+      remainingLabel = formatMinutesDuration(p.restPlan.totalMinutes - p.restElapsed);
+    }
+  } else if (p.status === 'eating') {
+    text = `Ест: ${p.eatPlan ? p.eatPlan.label : ''}`;
+    if (p.eatPlan) {
+      progressFraction = clamp(p.eatElapsed / p.eatPlan.totalMinutes, 0, 1);
+      remainingLabel = formatMinutesDuration(p.eatPlan.totalMinutes - p.eatElapsed);
+    }
+  } else if (p.status === 'moving') {
     const a = p.activity;
     const remainingKm = Math.max(0, a.totalKm - a.traveledKm);
     text = `→ ${pointById(a.targetId).name} · осталось ${formatKm(remainingKm)} км`;
     if (a.problemPending) text += ' — стоит';
   }
   const nightTag = isNight() ? ' 🌙 ночь, скорость ниже' : '';
-  panel.textContent = text + nightTag;
+
+  const signature = `${p.status}|${text}|${progressFraction === null ? 'x' : Math.round(progressFraction * 100)}`;
+  if (signature === lastStatusSignature) return;
+  lastStatusSignature = signature;
+
+  if (progressFraction !== null) {
+    panel.innerHTML = `
+      <div>${text}${nightTag}</div>
+      <div class="vital-track status-progress-track"><div class="vital-fill" style="width:${Math.round(progressFraction * 100)}%;background:linear-gradient(to right,#2a6690,#4a9dd1)"></div></div>
+      <div class="job-sub">Осталось ~${remainingLabel}</div>
+    `;
+  } else {
+    panel.textContent = text + nightTag;
+  }
 }
 
 let lastActionsSignature = null;
@@ -2078,6 +2203,12 @@ function openProblemModal(action) {
     }
   } else if (action.kind === 'exhausted') {
     addBtn('Отдохнуть на обочине', 'ignore');
+    if (state.player.hunger >= 60) {
+      addBtn(`🍔 Заказать доставку еды — ${foodDeliveryPrice()} ₽`, 'deliver');
+    }
+  } else if (action.kind === 'hungry') {
+    addBtn(`🍔 Заказать доставку — ${foodDeliveryPrice()} ₽`, 'deliver');
+    addBtn('Потерпеть', 'ignore');
   }
   el('problem-modal').classList.remove('hidden');
 }
