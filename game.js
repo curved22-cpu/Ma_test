@@ -634,8 +634,9 @@ function generateJob() {
   };
 }
 
+function jobPoolTarget() { return clamp(6 + Math.floor(state.stats.jobsCompleted / 4), 6, 24); }
 function maintainJobPool() {
-  while (state.availableJobs.length < 6) state.availableJobs.push(generateJob());
+  while (state.availableJobs.length < jobPoolTarget()) state.availableJobs.push(generateJob());
 }
 
 function checkJobDeadlines() {
@@ -1080,9 +1081,22 @@ function runOfflineCatchup() {
   return summary;
 }
 
+let saveIndicatorTimer = null;
+function flashSaveIndicator() {
+  const indicator = el('save-indicator');
+  if (!indicator) return;
+  indicator.classList.remove('hidden');
+  indicator.classList.remove('pulse');
+  void indicator.offsetWidth; // restart the animation
+  indicator.classList.add('pulse');
+  clearTimeout(saveIndicatorTimer);
+  saveIndicatorTimer = setTimeout(() => indicator.classList.add('hidden'), 900);
+}
+
 function saveGame() {
   state.lastRealTimestamp = Date.now();
   localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+  flashSaveIndicator();
 }
 
 function loadGame() {
@@ -1261,15 +1275,29 @@ function livePlayerWorldPos() {
   return { world: pointToWorld(p.positionId), space, angle: 0 };
 }
 
+// Fit-to-view zoom levels computed from the canvas's actual (possibly
+// non-square, e.g. the narrow-viewport 4:3 fallback) aspect ratio, so a whole
+// city or the whole country always fits regardless of screen shape.
+function cityFitZoom() {
+  const rect = canvas.getBoundingClientRect();
+  const minDim = Math.min(rect.width, rect.height) || 390;
+  return clamp(minDim / (CITY_WORLD_RADIUS * 2.2), ZOOM_MIN, ZOOM_MAX);
+}
+function countryFitZoom() {
+  const rect = canvas.getBoundingClientRect();
+  const minDim = Math.min(rect.width, rect.height) || 390;
+  return clamp(minDim / 95, ZOOM_MIN, ZOOM_MAX);
+}
+
 function centerOnPlayer(animated) {
   const live = livePlayerWorldPos();
   // For a city, frame the whole city (not a tight self-centered crop) so the
   // player's surroundings stay visible; on the open highway, center exactly.
   let targetX = live.world.x, targetY = live.world.y, targetZoom;
   if (live.space === 'country') {
-    targetZoom = 5;
+    targetZoom = countryFitZoom();
   } else {
-    targetZoom = 34;
+    targetZoom = cityFitZoom();
     const meta = cityMeta(live.space);
     targetX = meta.x; targetY = meta.y;
   }
@@ -1279,7 +1307,7 @@ function centerOnPlayer(animated) {
 
 function zoomToCity(cityId) {
   const meta = cityMeta(cityId);
-  cameraTween = { fromX: camera.x, fromY: camera.y, fromZoom: camera.zoom, toX: meta.x, toY: meta.y, toZoom: 34, start: performance.now(), duration: 550 };
+  cameraTween = { fromX: camera.x, fromY: camera.y, fromZoom: camera.zoom, toX: meta.x, toY: meta.y, toZoom: cityFitZoom(), start: performance.now(), duration: 550 };
 }
 
 function updateCameraTween(ts) {
@@ -1583,32 +1611,59 @@ function renderPointPanel() {
   }
 }
 
+const VEHICLE_CONTAINER_GLYPH = { foot: '🎒', twowheel: '🧺', car: '🚗', truck: '🚚' };
+
 let lastCargoSignature = null;
 function renderCargoPanel() {
   const box = el('cargo-panel');
   const p = state.player;
-  const signature = p.jobs.map(j => `${j.id}:${j.pickedUp}`).join(',') + '|' + p.status + '|' + p.positionId;
+  const spec = vehicleSpec();
+  const signature = p.jobs.map(j => `${j.id}:${j.pickedUp}`).join(',') + '|' + p.status + '|' + p.positionId + '|' + spec.id;
   if (signature === lastCargoSignature) return;
   lastCargoSignature = signature;
 
-  if (p.jobs.length === 0) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
   box.innerHTML = '';
 
-  const spec = vehicleSpec();
-  const bar = document.createElement('div');
-  bar.className = 'cargo-bar-label';
-  bar.textContent = `Груз: ${cargoWeightKg().toFixed(1)}/${spec.kg} кг · ${Math.round(cargoVolumeL())}/${spec.l} л`;
-  box.appendChild(bar);
+  const header = document.createElement('div');
+  header.className = 'cargo-header';
+  const icon = document.createElement('div');
+  icon.className = 'cargo-vehicle-icon';
+  icon.textContent = VEHICLE_CONTAINER_GLYPH[spec.draw] || '🎒';
+  const text = document.createElement('div');
+  text.className = 'cargo-header-text';
+  text.innerHTML = `<b>${spec.name}</b><div class="job-sub">${p.jobs.length ? 'Груз на борту' : 'Пусто — жди заказ'}</div>`;
+  header.append(icon, text);
+  box.appendChild(header);
 
-  const list = document.createElement('ul');
-  list.className = 'cargo-list';
+  const weightPct = clamp(cargoWeightKg() / spec.kg * 100, 0, 100);
+  const volPct = clamp(cargoVolumeL() / spec.l * 100, 0, 100);
+  const caps = document.createElement('div');
+  caps.className = 'cargo-cap-bars';
+  caps.innerHTML = `
+    <div class="cargo-cap-row"><span>Вес ${cargoWeightKg().toFixed(1)}/${spec.kg} кг</span></div>
+    <div class="cargo-cap-row"><div class="vital-track"><div class="vital-fill" style="width:${weightPct}%;background:linear-gradient(to right,#a3700e,#e2a63b)"></div></div></div>
+    <div class="cargo-cap-row"><span>Объём ${Math.round(cargoVolumeL())}/${spec.l} л</span></div>
+    <div class="cargo-cap-row"><div class="vital-track"><div class="vital-fill" style="width:${volPct}%;background:linear-gradient(to right,#2a6690,#4a9dd1)"></div></div></div>`;
+  box.appendChild(caps);
+
+  if (p.jobs.length === 0) return;
+
+  const grid = document.createElement('div');
+  grid.className = 'cargo-grid';
   p.jobs.forEach(job => {
-    const li = document.createElement('li');
-    const info = document.createElement('div');
-    info.className = 'cargo-info';
-    const statusText = job.pickedUp ? `везёшь → ${pointById(job.toId).name}` : `забрать в ${pointById(job.fromId).name}`;
-    info.textContent = `${STORAGE_GLYPH[job.storage]} ${job.itemName} · ${job.weightKg}кг/${job.volumeL}л · ${statusText}`;
+    const chip = document.createElement('div');
+    chip.className = 'cargo-chip ' + (job.pickedUp ? 'loaded' : 'pending');
+    const glyph = document.createElement('div');
+    glyph.className = 'cargo-chip-glyph';
+    glyph.textContent = STORAGE_GLYPH[job.storage];
+    const name = document.createElement('div');
+    name.className = 'cargo-chip-name';
+    const statusText = job.pickedUp ? `→ ${pointById(job.toId).name}` : `забрать: ${pointById(job.fromId).name}`;
+    name.innerHTML = `${job.itemName}<div class="job-sub">${statusText}</div>`;
+    const meta = document.createElement('div');
+    meta.className = 'cargo-chip-meta';
+    meta.textContent = `${job.weightKg}кг/${job.volumeL}л`;
     const btn = document.createElement('button');
     if (!job.pickedUp) {
       const canPickup = p.status === 'idle' && p.positionId === job.fromId;
@@ -1621,10 +1676,10 @@ function renderCargoPanel() {
       btn.disabled = !canDeliver;
       btn.onclick = () => { deliverJob(job.id); renderAll(); };
     }
-    li.append(info, btn);
-    list.appendChild(li);
+    chip.append(glyph, name, meta, btn);
+    grid.appendChild(chip);
   });
-  box.appendChild(list);
+  box.appendChild(grid);
 }
 
 let lastOrdersSignature = null;

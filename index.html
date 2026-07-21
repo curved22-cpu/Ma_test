@@ -20,46 +20,51 @@
     <p id="menu-hint" class="hint"></p>
   </section>
 
-  <section id="game-screen" class="screen hidden">
-    <header id="topbar">
-      <div class="topbar-row">
-        <span id="hud-money">0 ₽</span>
-        <span id="hud-time">День 1, 08:00</span>
-        <div class="topbar-icons">
-          <button id="btn-center-me" class="icon-btn map-toggle-btn">📍 Ко мне</button>
+  <section id="game-screen" class="screen game-layout hidden">
+    <div id="map-stage">
+      <canvas id="map-canvas"></canvas>
+
+      <div id="hud-top">
+        <div class="hud-money-time">
+          <span id="hud-money">0 ₽</span>
+          <span id="save-indicator" class="save-indicator hidden" title="Автосохранение">💾</span>
+          <span id="hud-time">День 1, 08:00</span>
+        </div>
+        <div class="hud-vitals">
+          <div class="vital-bar" title="Усталость">
+            <span class="vital-icon">⚡</span>
+            <div class="vital-track"><div id="bar-fatigue" class="vital-fill fatigue"></div></div>
+          </div>
+          <div class="vital-bar" title="Голод">
+            <span class="vital-icon">🍖</span>
+            <div class="vital-track"><div id="bar-hunger" class="vital-fill hunger"></div></div>
+          </div>
+          <div class="vital-bar" title="Техника">
+            <span class="vital-icon">🔧</span>
+            <div class="vital-track"><div id="bar-condition" class="vital-fill condition"></div></div>
+          </div>
+        </div>
+        <div class="hud-icon-buttons">
           <button id="btn-diary" class="icon-btn">📔</button>
           <button id="btn-open-menu" class="icon-btn">☰</button>
         </div>
       </div>
-      <div class="bars">
-        <div class="bar-row">
-          <span class="bar-label">Усталость</span>
-          <div class="bar"><div id="bar-fatigue" class="bar-fill fatigue"></div></div>
-        </div>
-        <div class="bar-row">
-          <span class="bar-label">Голод</span>
-          <div class="bar"><div id="bar-hunger" class="bar-fill hunger"></div></div>
-        </div>
-        <div class="bar-row">
-          <span class="bar-label">Техника</span>
-          <div class="bar"><div id="bar-condition" class="bar-fill condition"></div></div>
-        </div>
+
+      <button id="btn-center-me" class="map-control-btn" title="Ко мне">📍</button>
+
+      <div id="toast-area"></div>
+
+      <div id="map-overlays">
+        <div id="point-panel" class="panel hidden"></div>
+        <div id="actions-notify" class="notify-list"></div>
+        <div id="status-panel" class="panel"></div>
       </div>
-    </header>
+    </div>
 
-    <div id="toast-area"></div>
-
-    <canvas id="map-canvas"></canvas>
-
-    <div id="point-panel" class="panel hidden"></div>
-
-    <div id="actions-notify" class="notify-list"></div>
-
-    <div id="cargo-panel" class="panel hidden"></div>
-
-    <div id="status-panel" class="panel"></div>
-
-    <button id="btn-open-orders" class="orders-open-btn">📋 Заказы (<span id="orders-count">0</span>)</button>
+    <aside id="side-panel">
+      <div id="cargo-panel" class="hud-card hidden"></div>
+      <button id="btn-open-orders" class="orders-open-btn">📋 Заказы (<span id="orders-count">0</span>)</button>
+    </aside>
   </section>
 
   <div id="offline-modal" class="modal hidden">
@@ -137,6 +142,7 @@
   <div id="menu-modal" class="modal hidden">
     <div class="modal-box">
       <h2>Меню</h2>
+      <p class="hint">Игра сохраняется автоматически каждые несколько секунд (значок 💾 рядом с деньгами)</p>
       <button id="btn-save">Сохранить</button>
       <button id="btn-export">Скачать сохранение</button>
       <button id="btn-menu">Выйти в главное меню</button>
