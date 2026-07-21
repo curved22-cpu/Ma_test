@@ -1890,22 +1890,17 @@ function renderCargoPanel() {
   const icon = document.createElement('div');
   icon.className = 'cargo-vehicle-icon';
   icon.textContent = VEHICLE_CONTAINER_GLYPH[spec.draw] || '🎒';
-  const text = document.createElement('div');
-  text.className = 'cargo-header-text';
-  text.innerHTML = `<b>${spec.name}</b><div class="job-sub">${p.jobs.length ? 'Груз на борту' : 'Пусто — жди заказ'}</div>`;
-  header.append(icon, text);
-  box.appendChild(header);
 
   const weightPct = clamp(cargoWeightKg() / spec.kg * 100, 0, 100);
   const volPct = clamp(cargoVolumeL() / spec.l * 100, 0, 100);
-  const caps = document.createElement('div');
-  caps.className = 'cargo-cap-bars';
-  caps.innerHTML = `
-    <div class="cargo-cap-row"><span>Вес ${cargoWeightKg().toFixed(1)}/${spec.kg} кг</span></div>
-    <div class="cargo-cap-row"><div class="vital-track"><div class="vital-fill" style="width:${weightPct}%;background:linear-gradient(to right,#a3700e,#e2a63b)"></div></div></div>
-    <div class="cargo-cap-row"><span>Объём ${formatVolumeM3(cargoVolumeL())} / ${formatVolumeM3(spec.l)}</span></div>
-    <div class="cargo-cap-row"><div class="vital-track"><div class="vital-fill" style="width:${volPct}%;background:linear-gradient(to right,#2a6690,#4a9dd1)"></div></div></div>`;
-  box.appendChild(caps);
+  const info = document.createElement('div');
+  info.className = 'cargo-header-info';
+  info.innerHTML = `
+    <div class="cargo-header-text"><b>${spec.name}</b> · ${p.jobs.length ? 'груз на борту' : 'пусто'}</div>
+    <div class="cargo-cap-row"><span>${cargoWeightKg().toFixed(1)}/${spec.kg} кг</span><div class="vital-track"><div class="vital-fill" style="width:${weightPct}%;background:linear-gradient(to right,#a3700e,#e2a63b)"></div></div></div>
+    <div class="cargo-cap-row"><span>${formatVolumeM3(cargoVolumeL())} / ${formatVolumeM3(spec.l)}</span><div class="vital-track"><div class="vital-fill" style="width:${volPct}%;background:linear-gradient(to right,#2a6690,#4a9dd1)"></div></div></div>`;
+  header.append(icon, info);
+  box.appendChild(header);
 
   if (p.jobs.length === 0) return;
 
