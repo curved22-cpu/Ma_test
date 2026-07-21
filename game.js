@@ -517,6 +517,7 @@ let uiSelectedPointId = null;
 let catchupBuffer = null;
 
 function newGameState() {
+  const startingVehicle = { type: 'foot', condition: 100, upgraded: false, fuel: Infinity };
   return {
     money: START_MONEY,
     gameTime: 0,
@@ -528,7 +529,8 @@ function newGameState() {
       activity: null,
       fatigue: 15,
       hunger: 15,
-      vehicle: { type: 'foot', condition: 100, upgraded: false, fuel: Infinity },
+      vehicles: [startingVehicle], // every owned vehicle instance; .vehicle below is always one of these (same reference)
+      vehicle: startingVehicle,
       restElapsed: 0,
       eatElapsed: 0,
       restPlan: null,
@@ -934,12 +936,26 @@ function buyVehicle(vehicleId) {
   const v = VEHICLE_BY_ID[vehicleId];
   const p = state.player;
   if (!v || p.status !== 'idle' || pointById(p.positionId).type !== 'shop') return;
-  if (p.vehicle.type === vehicleId) return;
+  if (p.vehicles.some(veh => veh.type === vehicleId)) { toast('Такая техника уже есть в твоём гараже'); return; }
   if (state.money < v.price) return;
   if (cargoWeightKg() > v.kg || cargoVolumeL() > v.l) { toast('Текущий груз не влезет в этот транспорт'); return; }
   state.money -= v.price;
-  p.vehicle = { type: v.id, condition: 100, upgraded: false, fuel: v.tank };
+  const newVehicle = { type: v.id, condition: 100, upgraded: false, fuel: v.tank };
+  p.vehicles.push(newVehicle);
+  p.vehicle = newVehicle;
   log(`Купил транспорт: ${v.name}`);
+}
+
+function switchVehicle(vehicleType) {
+  const p = state.player;
+  if (p.vehicle.type === vehicleType) return;
+  if (p.status !== 'idle') { toast('Пересесть можно, только когда стоишь на месте'); return; }
+  const target = p.vehicles.find(veh => veh.type === vehicleType);
+  if (!target) return;
+  const spec = VEHICLE_BY_ID[vehicleType];
+  if (cargoWeightKg() > spec.kg || cargoVolumeL() > spec.l) { toast('Текущий груз не влезет в эту технику'); return; }
+  p.vehicle = target;
+  log(`Пересел на: ${spec.name}`, { silent: true });
 }
 
 function workshopRepair() {
@@ -1099,10 +1115,22 @@ function saveGame() {
   flashSaveIndicator();
 }
 
+// JSON round-tripping breaks the shared object identity between
+// player.vehicle and its entry in player.vehicles (it deserializes as two
+// separate copies) — re-link them, and backfill vehicles for old saves.
+function relinkActiveVehicle() {
+  const p = state.player;
+  if (!p.vehicles || p.vehicles.length === 0) { p.vehicles = [p.vehicle]; return; }
+  const match = p.vehicles.find(v => v.type === p.vehicle.type);
+  if (match) p.vehicle = match;
+  else p.vehicles.push(p.vehicle);
+}
+
 function loadGame() {
   const raw = localStorage.getItem(SAVE_KEY);
   if (!raw) return false;
   state = JSON.parse(raw);
+  relinkActiveVehicle();
   return true;
 }
 
@@ -1841,6 +1869,7 @@ function renderAll() {
   renderPendingActions();
   renderPointPanel();
   renderCargoPanel();
+  renderGarageCount();
   renderOrdersCount();
   renderOrdersList();
   renderToasts();
@@ -1863,12 +1892,12 @@ function openShop() {
       list.appendChild(header);
       VEHICLES.filter(v => v.cat === cat).forEach(v => {
         const li = document.createElement('li');
-        const owned = state.player.vehicle.type === v.id;
+        const owned = state.player.vehicles.some(veh => veh.type === v.id);
         const info = document.createElement('div');
         const fuelTxt = v.fuel === 'legs' ? '' : ` · бак ${v.tank} км`;
         info.innerHTML = `<b>${v.name}</b><div class="job-sub">${v.speed} км/ч · до ${v.trip} км за раз${fuelTxt} · ${v.kg} кг / ${v.l} л${v.fridge ? ' · встроенный холод' : ''}</div>`;
         const btn = document.createElement('button');
-        btn.textContent = owned ? 'Используется' : (v.price === 0 ? 'Взять' : `Купить — ${v.price.toLocaleString('ru-RU')} ₽`);
+        btn.textContent = owned ? 'В гараже' : (v.price === 0 ? 'Взять' : `Купить — ${v.price.toLocaleString('ru-RU')} ₽`);
         btn.disabled = owned || state.money < v.price;
         btn.onclick = () => { buyVehicle(v.id); openShop(); renderAll(); };
         li.append(info, btn);
@@ -1901,6 +1930,112 @@ function openWorkshop() {
   el('btn-workshop-upgrade').disabled = upgraded || state.money < UPGRADE_COST;
   el('workshop-upgrade-hint').textContent = upgraded ? 'Подвеска уже укреплена' : 'Снижает шанс серьёзных поломок';
   el('workshop-modal').classList.remove('hidden');
+}
+
+// ---------- garage (owned vehicles) ----------
+
+let garageView = { mode: 'list' };
+
+function renderGarageCount() {
+  el('garage-count').textContent = state.player.vehicles.length;
+}
+
+function conditionLabel(pct) {
+  if (pct >= 80) return 'отличное';
+  if (pct >= 50) return 'нормальное';
+  if (pct >= 25) return 'так себе';
+  return 'плохое';
+}
+
+function openGarage() {
+  garageView = { mode: 'list' };
+  renderGarageContent();
+  el('garage-modal').classList.remove('hidden');
+}
+
+function renderGarageContent() {
+  const box = el('garage-content');
+  box.innerHTML = '';
+  if (garageView.mode === 'detail') renderGarageDetail(box, garageView.type);
+  else renderGarageList(box);
+}
+
+function renderGarageList(box) {
+  el('garage-title').textContent = 'Моя техника';
+  const list = document.createElement('ul');
+  list.className = 'garage-list';
+  state.player.vehicles.forEach(veh => {
+    const spec = VEHICLE_BY_ID[veh.type];
+    const isActive = state.player.vehicle.type === veh.type;
+    const li = document.createElement('li');
+    li.className = isActive ? 'active-vehicle' : '';
+    const icon = document.createElement('div');
+    icon.className = 'garage-icon';
+    icon.textContent = CAT_GLYPH[spec.cat];
+    const info = document.createElement('div');
+    info.className = 'garage-info';
+    const fuelTxt = spec.fuel === 'legs' ? '' : ` · топливо ${Math.round(veh.fuel)}/${spec.tank} км`;
+    info.innerHTML = `${isActive ? '<span class="garage-badge">За рулём</span><br>' : ''}<b>${spec.name}</b><div class="garage-sub">Состояние: ${Math.round(veh.condition)}%${fuelTxt}</div>`;
+    li.append(icon, info);
+    li.onclick = () => { garageView = { mode: 'detail', type: veh.type }; renderGarageContent(); };
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+}
+
+function renderGarageDetail(box, vehicleType) {
+  const veh = state.player.vehicles.find(v => v.type === vehicleType);
+  const spec = VEHICLE_BY_ID[vehicleType];
+  if (!veh || !spec) { garageView = { mode: 'list' }; renderGarageContent(); return; }
+  el('garage-title').textContent = spec.name;
+  const isActive = state.player.vehicle.type === vehicleType;
+
+  const back = document.createElement('button');
+  back.className = 'garage-back-btn';
+  back.textContent = '← Ко всей технике';
+  back.onclick = () => { garageView = { mode: 'list' }; renderGarageContent(); };
+  box.appendChild(back);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'garage-detail';
+
+  const header = document.createElement('div');
+  header.className = 'garage-detail-header';
+  header.innerHTML = `<div class="garage-icon">${CAT_GLYPH[spec.cat]}</div><div><b>${spec.name}</b><div class="garage-sub">${CAT_LABEL[spec.cat]}${isActive ? ' · за рулём сейчас' : ''}</div></div>`;
+  wrap.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'garage-spec-grid';
+  const fuelRow = spec.fuel === 'legs'
+    ? '<div><span>Топливо</span>не требуется</div>'
+    : `<div><span>Запас хода</span>${Math.round(veh.fuel)}/${spec.tank} км</div>`;
+  grid.innerHTML = `
+    <div><span>Состояние</span>${Math.round(veh.condition)}% (${conditionLabel(veh.condition)})</div>
+    <div><span>Скорость</span>${spec.speed} км/ч</div>
+    <div><span>Грузоподъёмность</span>${spec.kg} кг</div>
+    <div><span>Объём кузова</span>${spec.l} л</div>
+    <div><span>Макс. рейс без остановки</span>${spec.trip} км</div>
+    ${fuelRow}
+    <div><span>Подвеска</span>${veh.upgraded ? 'укреплена' : 'обычная'}</div>
+    <div><span>Утомляемость</span>${spec.fat.toFixed(2)}/км</div>
+  `;
+  wrap.appendChild(grid);
+
+  const breakdownNote = document.createElement('p');
+  breakdownNote.className = 'hint';
+  breakdownNote.textContent = 'Поломки пока считаются только через общее состояние — отдельные неисправности (колесо, руль, масло) добавим позже.';
+  wrap.appendChild(breakdownNote);
+
+  const actions = document.createElement('div');
+  actions.className = 'garage-detail-actions';
+  const switchBtn = document.createElement('button');
+  switchBtn.textContent = isActive ? 'Уже за рулём' : '🔁 Пересесть';
+  switchBtn.disabled = isActive || state.player.status !== 'idle';
+  switchBtn.onclick = () => { switchVehicle(vehicleType); renderGarageContent(); renderAll(); };
+  actions.appendChild(switchBtn);
+  wrap.appendChild(actions);
+
+  box.appendChild(wrap);
 }
 
 // ---------- main loop ----------
@@ -1995,6 +2130,7 @@ el('import-file').onchange = (e) => {
   reader.onload = () => {
     try {
       state = JSON.parse(reader.result);
+      relinkActiveVehicle();
       const summary = runOfflineCatchup();
       saveGame();
       showGameScreen();
@@ -2035,6 +2171,9 @@ el('btn-orders-close').onclick = () => el('orders-modal').classList.add('hidden'
 el('filter-storage').onchange = (e) => { orderFilters.storage = e.target.value; lastOrdersSignature = null; renderOrdersList(); };
 el('filter-urgency').onchange = (e) => { orderFilters.urgency = e.target.value; lastOrdersSignature = null; renderOrdersList(); };
 el('filter-fits-only').onchange = (e) => { orderFilters.fitsOnly = e.target.checked; lastOrdersSignature = null; renderOrdersList(); };
+
+el('btn-open-garage').onclick = () => openGarage();
+el('btn-garage-close').onclick = () => el('garage-modal').classList.add('hidden');
 
 el('btn-shop-close').onclick = () => el('shop-modal').classList.add('hidden');
 el('shop-tab-vehicles').onclick = () => { shopTab = 'vehicles'; openShop(); };
