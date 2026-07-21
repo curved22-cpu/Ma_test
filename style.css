@@ -85,6 +85,17 @@ html, body { height: 100%; margin: 0; }
   letter-spacing: 0.02em;
 }
 #hud-time { font-size: 0.78rem; color: #b7c0cc; font-weight: 500; }
+.expenses-btn {
+  align-self: flex-start;
+  background: none; border: none; padding: 0; margin: 0;
+  font-size: 0.72rem; font-weight: 600; color: #c96a63;
+  opacity: 0.85; cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+.expenses-btn:active { opacity: 1; }
+#expenses-content { text-align: left; }
+.expenses-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; font-size: 0.92rem; border-bottom: 1px solid #2a3038; }
+.expenses-row.total { font-weight: 700; border-bottom: none; padding-top: 10px; }
+.expenses-row .expenses-label { color: #9aa4b2; }
 
 .hud-vitals {
   display: flex; gap: 10px;

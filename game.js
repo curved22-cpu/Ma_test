@@ -19,8 +19,15 @@ const VEHICLE_RESALE_MIN_RATE = 0.15; // resale share of price at 0% condition (
 const VEHICLE_RESALE_UPGRADE_BONUS_RATE = 0.5; // upgraded suspension adds this share of UPGRADE_COST to resale value
 const UPGRADE_RESALE_RATE = 0.5; // selling just the upgrade refunds half of UPGRADE_COST
 const MAX_PENDING_JOBS = 3;
-const LIVING_COST_PER_DAY = 150;   // food/rent regardless of activity
-const VEHICLE_UPKEEP_RATE = 0.00015; // fraction of vehicle price, per day
+// Cost of living scales with lifetime earnings (a proxy for business growth/status).
+// Charged once per day at midnight as a random amount within the active tier's range.
+const LIVING_COST_TIERS = [
+  { minEarned: 0, min: 60, max: 200 },
+  { minEarned: 20000, min: 150, max: 400 },
+  { minEarned: 100000, min: 300, max: 700 },
+  { minEarned: 500000, min: 500, max: 1200 },
+];
+const VEHICLE_UPKEEP_RATE = 0.0008; // fraction of active vehicle price, charged once per day
 const BANKRUPTCY_DEBT_LIMIT = -3000;
 const LATE_PENALTY_PER_DAY = 0.10; // fraction of payout lost per full day late
 const LATE_PENALTY_MAX = 0.9; // never lose more than 90% of the payout
@@ -553,7 +560,48 @@ function newGameState() {
     eventLog: [],
     pendingActions: [],
     stats: { jobsCompleted: 0, totalEarned: 0 },
+    lastProcessedDay: 0,
+    dailyExpense: { living: 0, vehicleUpkeep: 0, total: 0, day: 1 },
   };
+}
+
+function dayIndexFromGameTime(gameTime) { return Math.floor((gameTime + DAY_START_OFFSET) / 1440); }
+
+function livingCostRange() {
+  let range = LIVING_COST_TIERS[0];
+  for (const tier of LIVING_COST_TIERS) {
+    if (state.stats.totalEarned >= tier.minEarned) range = tier;
+  }
+  return range;
+}
+
+function rollDailyExpense() {
+  const range = livingCostRange();
+  const living = Math.round(rand(range.min, range.max));
+  const vehicleUpkeep = Math.round(vehicleSpec().price * VEHICLE_UPKEEP_RATE);
+  state.dailyExpense = { living, vehicleUpkeep, total: living + vehicleUpkeep, day: dayIndexFromGameTime(state.gameTime) + 1 };
+}
+
+function chargeDailyExpense() {
+  const charge = state.dailyExpense.total;
+  state.money -= charge;
+  log(`Расходы за день: ${state.dailyExpense.living} ₽ (жизнь) + ${state.dailyExpense.vehicleUpkeep} ₽ (техника) = ${charge} ₽`, { silent: true });
+  if (state.money <= BANKRUPTCY_DEBT_LIMIT) {
+    state.gameOver = 'bankruptcy';
+    log(`Банкротство: долг превысил ${-BANKRUPTCY_DEBT_LIMIT} ₽. Расходы на жизнь и технику съели весь бюджет.`);
+  }
+  rollDailyExpense();
+}
+
+function initDailyEconomy() {
+  rollDailyExpense();
+  maintainJobPool();
+  ensureFittingJobExists();
+}
+
+function migrateEconomyFields() {
+  if (typeof state.lastProcessedDay !== 'number') state.lastProcessedDay = dayIndexFromGameTime(state.gameTime);
+  if (!state.dailyExpense) rollDailyExpense();
 }
 
 function log(text, opts) {
@@ -653,6 +701,55 @@ function generateJob() {
 function jobPoolTarget() { return clamp(6 + Math.floor(state.stats.jobsCompleted / 4), 6, 24); }
 function maintainJobPool() {
   while (state.availableJobs.length < jobPoolTarget()) state.availableJobs.push(generateJob());
+}
+
+// A job tailored to definitely fit in whatever's left of the current vehicle's
+// capacity, staying inside the player's current city and skipping equipment
+// requirements and urgent (1-hour) deadlines — a safety net so there is always
+// at least one order a freshly-started or newly-switched courier can actually take.
+function generateFittingJob(remainingKg, remainingL) {
+  const p = state.player;
+  const citySpace = pointSpace(p.positionId);
+  const cityPts = DELIVERY_BY_CITY[citySpace] && DELIVERY_BY_CITY[citySpace].length >= 2
+    ? DELIVERY_BY_CITY[citySpace] : DELIVERY_BY_CITY['rivnoe'];
+  const fromId = pick(cityPts);
+  let toId = pick(cityPts), guard = 0;
+  while (toId === fromId && guard++ < 20) toId = pick(cityPts);
+
+  const normalTemplates = ITEM_TEMPLATES.filter(t => t.storage === 'normal');
+  const template = pick(normalTemplates);
+  const maxWeight = Math.min(template.weightKg[1], remainingKg);
+  const minWeight = Math.min(template.weightKg[0], maxWeight);
+  const weightKg = Math.round(rand(minWeight, maxWeight) * 10) / 10;
+  const maxVolume = Math.min(template.volumeL[1], remainingL);
+  const minVolume = Math.min(template.volumeL[0], maxVolume);
+  const volumeL = Math.round(rand(minVolume, maxVolume));
+
+  const easyUrgencies = template.urgency.filter(u => u !== 'urgent');
+  const urgencyKey = pick(easyUrgencies.length ? easyUrgencies : template.urgency);
+  const urgency = URGENCY_LEVELS[urgencyKey];
+  const distanceKm = pathDistanceKm(shortestPath(fromId, toId));
+  const weightSurcharge = Math.round(weightKg * 3);
+  const urgencySurcharge = { urgent: 250, standard: 60, none: 0 }[urgencyKey];
+  const payout = Math.round(120 + distanceKm * 20 + urgencySurcharge + weightSurcharge + rand(-15, 25));
+
+  return {
+    id: jobIdSeq++, fromId, toId,
+    itemName: template.name, storage: template.storage, weightKg, volumeL,
+    urgencyKey, urgencyLabel: urgency.label,
+    deadlineReal: urgency.windowRealMs === Infinity ? null : Date.now() + urgency.windowRealMs,
+    distanceKm: Math.round(distanceKm * 10) / 10,
+    payout, pickedUp: false,
+  };
+}
+
+function ensureFittingJobExists() {
+  if (state.availableJobs.some(j => jobFitsVehicle(j))) return;
+  const spec = vehicleSpec();
+  const remainingKg = spec.kg - cargoWeightKg();
+  const remainingL = spec.l - cargoVolumeL();
+  if (remainingKg < 0.3 || remainingL < 1) return; // vehicle already full — nothing to guarantee right now
+  state.availableJobs.push(generateFittingJob(remainingKg, remainingL));
 }
 
 function checkJobDeadlines() {
@@ -1088,15 +1185,9 @@ function simulateTick(dt, summary) {
   const p = state.player;
   checkJobDeadlines();
 
-  const upkeepPerDay = LIVING_COST_PER_DAY + Math.round(vehicleSpec().price * VEHICLE_UPKEEP_RATE);
-  state.money -= upkeepPerDay * (dt / 1440);
-  if (state.money <= BANKRUPTCY_DEBT_LIMIT) {
-    state.gameOver = 'bankruptcy';
-    log(`Банкротство: долг превысил ${-BANKRUPTCY_DEBT_LIMIT} ₽. Расходы на жизнь и технику съели весь бюджет.`);
-    return;
-  } else if (state.money < 0 && !p.warnedDebt) {
+  if (state.money < 0 && !p.warnedDebt) {
     p.warnedDebt = true;
-    toast('Ты в минусе — расходы на жизнь идут в долг. Заработай, пока не наступило банкротство!');
+    toast('Ты в минусе — расходы идут в долг. Заработай, пока не наступило банкротство!');
   } else if (state.money >= 0) {
     p.warnedDebt = false;
   }
@@ -1155,8 +1246,13 @@ function simulateTick(dt, summary) {
   if (p.fatigue >= 90 && !p.warnedFatigue) { p.warnedFatigue = true; toast('Курьер сильно устал — пора отдохнуть'); }
   if (p.fatigue < 80) p.warnedFatigue = false;
 
-  if (Math.random() < dt * 0.01) maintainJobPool();
   state.gameTime += dt;
+  while (dayIndexFromGameTime(state.gameTime) > state.lastProcessedDay && !state.gameOver) {
+    state.lastProcessedDay++;
+    chargeDailyExpense();
+    maintainJobPool();
+    ensureFittingJobExists();
+  }
 }
 
 const HUNGER_RATE_MOVING = 0.18;
@@ -1212,6 +1308,7 @@ function loadGame() {
   if (!raw) return false;
   state = JSON.parse(raw);
   relinkActiveVehicle();
+  migrateEconomyFields();
   return true;
 }
 
@@ -1960,6 +2057,7 @@ function renderAll() {
   el('hud-money').textContent = `${Math.round(state.money)} ₽`;
   el('hud-money').style.color = state.money < 0 ? '#d9534f' : '';
   el('hud-time').textContent = formatTime(state.gameTime);
+  el('btn-expenses').textContent = `-${state.dailyExpense.total} ₽/день`;
   // Displayed inverted: these read as energy/satiety, so the bar drains as
   // fatigue/hunger (the underlying tracked values) climb toward exhausted/hungry.
   el('bar-fatigue').style.width = `${100 - state.player.fatigue}%`;
@@ -2053,6 +2151,18 @@ function openGarage() {
   garageView = { mode: 'list' };
   renderGarageContent();
   el('garage-modal').classList.remove('hidden');
+}
+
+function openExpenses() {
+  const d = state.dailyExpense;
+  const spec = vehicleSpec();
+  el('expenses-content').innerHTML = `
+    <div class="expenses-row"><span class="expenses-label">Жизнь (еда, жильё)</span><span>${d.living} ₽</span></div>
+    <div class="expenses-row"><span class="expenses-label">Содержание техники (${spec.name})</span><span>${d.vehicleUpkeep} ₽</span></div>
+    <div class="expenses-row total"><span>Итого за день ${d.day}</span><span>${d.total} ₽</span></div>
+    <p class="hint">Списывается автоматически раз в сутки, в полночь по игровому времени. Сумма меняется каждый день и растёт по мере роста дела.</p>
+  `;
+  el('expenses-modal').classList.remove('hidden');
 }
 
 function renderGarageContent() {
@@ -2230,6 +2340,7 @@ el('btn-bankruptcy-restart').onclick = () => {
   bankruptcyShown = false;
   state = newGameState();
   jobIdSeq = 1;
+  initDailyEconomy();
   saveGame();
   showGameScreen();
 };
@@ -2238,6 +2349,7 @@ el('btn-new-game').onclick = () => {
   state = newGameState();
   jobIdSeq = 1;
   bankruptcyShown = false;
+  initDailyEconomy();
   saveGame();
   showGameScreen();
 };
@@ -2260,6 +2372,7 @@ el('import-file').onchange = (e) => {
     try {
       state = JSON.parse(reader.result);
       relinkActiveVehicle();
+      migrateEconomyFields();
       const summary = runOfflineCatchup();
       saveGame();
       showGameScreen();
@@ -2303,6 +2416,9 @@ el('filter-fits-only').onchange = (e) => { orderFilters.fitsOnly = e.target.chec
 
 el('btn-open-garage').onclick = () => openGarage();
 el('btn-garage-close').onclick = () => el('garage-modal').classList.add('hidden');
+
+el('btn-expenses').onclick = () => openExpenses();
+el('btn-expenses-close').onclick = () => el('expenses-modal').classList.add('hidden');
 
 el('btn-refuse-confirm').onclick = () => {
   if (pendingRefuseJobId !== null) refuseJob(pendingRefuseJobId);

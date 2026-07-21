@@ -27,6 +27,7 @@
       <div id="hud-top">
         <div class="hud-money-time">
           <span id="hud-money">0 ₽</span>
+          <button id="btn-expenses" class="expenses-btn">-0 ₽/день</button>
           <span id="hud-time">День 1, 08:00</span>
         </div>
         <div class="hud-vitals">
@@ -132,6 +133,14 @@
       </div>
       <ul id="orders-list" class="job-list"></ul>
       <button id="btn-orders-close">Закрыть</button>
+    </div>
+  </div>
+
+  <div id="expenses-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Расходы за день</h2>
+      <div id="expenses-content"></div>
+      <button id="btn-expenses-close">Закрыть</button>
     </div>
   </div>
 
