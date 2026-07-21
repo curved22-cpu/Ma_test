@@ -307,6 +307,16 @@ html, body { height: 100%; margin: 0; }
 }
 .modal-box button { margin-top: 8px; width: 100%; }
 
+#offline-header { text-align: left; line-height: 1.5; }
+#offline-header.offline-critical {
+  background: rgba(214,69,69,0.15);
+  border: 1px solid #d64545;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #ff8787;
+  font-weight: 600;
+}
+
 .problem-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 
 #toast-area {
@@ -335,8 +345,14 @@ html, body { height: 100%; margin: 0; }
   box-shadow: 0 10px 34px rgba(0,0,0,0.55);
   animation: toast-in 0.25s ease-out;
 }
+.toast-persistent {
+  pointer-events: auto;
+  cursor: pointer;
+  border-color: #d99c3f;
+}
 .toast-leaving {
   animation: toast-fly-to-diary 700ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
 }
 @keyframes toast-in { from { opacity: 0; transform: scale(0.85) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 @keyframes toast-fly-to-diary {

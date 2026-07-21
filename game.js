@@ -6,17 +6,18 @@ const GAME_MIN_PER_REAL_SEC = TIME_SCALE / 60;
 const DAY_START_OFFSET = 8 * 60; // game clock begins at Day 1, 08:00
 const MAX_OFFLINE_MS = 60 * 24 * 3600 * 1000; // cap catch-up at 60 real days
 const TOAST_DURATION_MS = 5000;
-const TOAST_EXIT_MS = 700; // time before expiry spent flying into the diary icon
+const TOAST_EXIT_MS = 700; // duration of the fly-to-diary dismiss animation
 const CITY_KM_PER_UNIT = 0.08;   // city-local map scale (a walkable town, not a 50km sprawl)
 const COUNTRY_KM_PER_UNIT = 3;   // country map scale (cross-country distances)
 const NIGHT_START_MIN = 22 * 60;
 const NIGHT_END_MIN = 6 * 60;
 const NIGHT_SPEED_MULT = 0.7;
 const WEAR_PER_KM = 0.5;
+const ENDURE_FATIGUE_MULT = 3; // fatigue drains 3x while "enduring" hunger with no money for food
 // Breakdown chance per trip scales with wear: worn-out technique is much more likely
 // to act up, which is the whole point — it rewards keeping condition/suspension up.
-const BREAKDOWN_BASE_CHANCE = 0.06; // at perfect (100%) condition
-const BREAKDOWN_WEAR_BONUS = 0.12;  // extra chance added at 0% condition
+const BREAKDOWN_BASE_CHANCE = 0.02; // at perfect (100%) condition
+const BREAKDOWN_WEAR_BONUS = 0.04;  // extra chance added at 0% condition
 const BREAKDOWN_SEVERE_BASE = 0.02; // severe (tow-worthy) share of triggered breakdowns at perfect condition
 const BREAKDOWN_SEVERE_WEAR_BONUS = 0.10; // extra severe share added at 0% condition
 const WORKSHOP_REPAIR_COST = 600;
@@ -710,9 +711,73 @@ let actionIdSeq = 1;
 let lastFrameTs = null;
 let autosaveAccum = 0;
 let toasts = [];
+let leavingToastIds = new Set();
 let uiSelectedPointId = null;
 let uiRouteJobId = null; // taken job whose full route is highlighted on the map
 let catchupBuffer = null;
+let offlinePauseRequested = false; // set mid-catchup when a crisis must hand control back live
+let offlineAutoTally = null; // { meals, foodSpent, sleeps, sleepSpent } while catching up
+
+function resolveOfflineBreakdown(activity) {
+  const p = state.player;
+  const spec = vehicleSpec();
+  const type = breakdownPoolFor(spec).find(t => t.id === activity.problem.typeId);
+  if (!type) return;
+  const pendingIdx = state.pendingActions.findIndex(pa => pa.kind === 'breakdown' && pa.typeId === type.id);
+  if (type.severity === 'minor') {
+    // Minor issues are cheap enough to just shrug off automatically.
+    activity.totalKm *= type.ignorePenalty;
+    log(`${type.label} — мелочь, проигнорировал на ходу (офлайн)`, { silent: true });
+  } else if (state.money >= type.towCost) {
+    // Can afford the fix — handled automatically, same as choosing it live.
+    state.money -= type.towCost;
+    p.vehicle.condition = 100;
+    log(`${type.label} — устранили автоматически за ${type.towCost} ₽ (офлайн)`, { silent: true });
+  } else {
+    // Can't afford it — freeze here so the player deals with it live.
+    offlinePauseRequested = true;
+    return;
+  }
+  if (pendingIdx !== -1) state.pendingActions.splice(pendingIdx, 1);
+  activity.problemPending = false;
+  activity.problem = null;
+}
+
+const OFFLINE_SLEEP_AWAY_COST = 200; // flat "spent the night somewhere" cost when not home
+
+function offlineAutoEat() {
+  const p = state.player;
+  const isHome = pointById(p.positionId).type === 'home';
+  const opt = EAT_OPTIONS.find(o => o.id === 'meal');
+  const cost = isHome ? 0 : EAT_PRICE_CAFE.meal;
+  if (state.money < cost) { startEnduring(); return; }
+  state.money -= cost;
+  p.status = 'eating';
+  p.eatElapsed = 0;
+  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label };
+  if (offlineAutoTally) { offlineAutoTally.meals++; offlineAutoTally.foodSpent += cost; }
+  log(isHome ? 'Поел дома (авто, пока был офлайн)' : `Поел в кафе по пути — ${cost} ₽ (авто, офлайн)`, { silent: true });
+}
+
+function offlineAutoSleep() {
+  const p = state.player;
+  const isHome = pointById(p.positionId).type === 'home';
+  const cost = isHome ? 0 : OFFLINE_SLEEP_AWAY_COST;
+  if (state.money < cost) {
+    p.status = 'resting';
+    p.restElapsed = 0;
+    p.restPlan = { totalMinutes: IDLE_REST_OPTION.minutes, fatigueRelief: IDLE_REST_OPTION.fatigueRelief, label: IDLE_REST_OPTION.label };
+    log('Не хватило денег на ночлег — прикорнул прямо так (офлайн)', { silent: true });
+    return;
+  }
+  state.money -= cost;
+  const opt = SLEEP_OPTIONS.find(o => o.id === 'sleep8');
+  p.status = 'resting';
+  p.restElapsed = 0;
+  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, label: opt.label };
+  if (offlineAutoTally) { offlineAutoTally.sleeps++; offlineAutoTally.sleepSpent += cost; }
+  log(isHome ? 'Поспал дома (авто, пока был офлайн)' : `Переночевал не дома — ${cost} ₽ (авто, офлайн)`, { silent: true });
+}
 
 function newGameState() {
   const startingVehicle = { type: 'foot', condition: 100, upgraded: false, fuel: Infinity };
@@ -739,6 +804,7 @@ function newGameState() {
       warnedFatigue: false,
       warnedDebt: false,
       offeredFoodDelivery: false,
+      enduring: false,
     },
     availableJobs: [],
     eventLog: [],
@@ -797,8 +863,25 @@ function log(text, opts) {
   else if (!silent) toast(text);
 }
 
-function toast(text) {
-  toasts.push({ id: actionIdSeq++, text, expiresAt: Date.now() + TOAST_DURATION_MS });
+// Regular toasts auto-expire like before, and don't intercept taps to whatever's
+// underneath (map, point panel). Persistent ones (offline-return notices) are the
+// exception: they stack until tapped, since the player needs to actually register them.
+function toast(text, opts) {
+  const persistent = !!(opts && opts.persistent);
+  toasts.push({ id: actionIdSeq++, text, persistent, expiresAt: persistent ? Infinity : Date.now() + TOAST_DURATION_MS });
+}
+
+function dismissToast(id) {
+  if (leavingToastIds.has(id)) return;
+  leavingToastIds.add(id);
+  lastToastSignature = null;
+  renderToasts();
+  setTimeout(() => {
+    toasts = toasts.filter(t => t.id !== id);
+    leavingToastIds.delete(id);
+    lastToastSignature = null;
+    renderToasts();
+  }, TOAST_EXIT_MS);
 }
 
 function formatTime(gameMinutes) {
@@ -1064,6 +1147,7 @@ function orderFoodDelivery() {
   if (state.money < price) { toast('Не хватает денег на доставку еды'); return; }
   state.money -= price;
   state.player.hunger = clamp(state.player.hunger - EAT_OPTIONS.find(o => o.id === 'meal').hungerRelief, 0, 100);
+  state.player.enduring = false;
   log(`Заказал доставку еды прямо в пути — ${price} ₽`);
 }
 
@@ -1071,8 +1155,16 @@ function offerFoodDelivery() {
   pushPendingAction({
     kind: 'hungry',
     title: 'Проголодался в пути',
-    text: `Живот совсем подводит. Можно заказать доставку еды прямо сюда — дороже, чем в кафе (доставка +${Math.round(FOOD_DELIVERY_SURCHARGE * 100)}%), но не придётся останавливаться и искать кафе.`,
+    text: `Живот совсем подводит. Можно заказать доставку еды прямо сюда — дороже, чем в кафе (доставка +${Math.round(FOOD_DELIVERY_SURCHARGE * 100)}%), но не придётся останавливаться и искать кафе. Если денег нет — остаётся только терпеть, а это вытягивает силы втрое быстрее.`,
   });
+}
+
+// Free last-resort choice when hungry with no money for delivery: keep going,
+// but energy now drains 3x faster until the courier actually eats something.
+// If both energy and hunger bottom out while enduring, that's game over.
+function startEnduring() {
+  state.player.enduring = true;
+  log('Решил перетерпеть голод — силы теперь тают втрое быстрее, пока не поест', { silent: true });
 }
 const SLEEP_OPTIONS = [
   { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30 },
@@ -1101,6 +1193,7 @@ function cancelCurrentAction() {
       const relief = Math.round(p.eatPlan.hungerRelief * fraction * INTERRUPT_PENALTY_FACTOR);
       p.hunger = clamp(p.hunger - relief, 0, 100);
       log(`Прервал приём пищи (${p.eatPlan.label}), не доел — утолил ${relief} голода из ${p.eatPlan.hungerRelief}`, { silent: true });
+      p.enduring = false;
     }
     p.status = 'idle'; p.eatPlan = null; p.eatElapsed = 0;
   }
@@ -1302,6 +1395,7 @@ function resolvePendingAction(actionId, choice) {
   // Not tied to a blocked travel activity — the courier keeps moving either way.
   if (action.kind === 'hungry') {
     if (choice === 'deliver') orderFoodDelivery();
+    else if (choice === 'endure') startEnduring();
     state.pendingActions.splice(idx, 1);
     return;
   }
@@ -1448,9 +1542,23 @@ function simulateTick(dt, summary) {
     p.warnedDebt = false;
   }
 
+  // While unattended, the courier takes care of himself instead of just
+  // standing there: eats or sleeps automatically once idle and in real need.
+  if (catchupBuffer && p.status === 'idle') {
+    if (p.hunger >= 80) offlineAutoEat();
+    else if (p.fatigue >= 80) offlineAutoSleep();
+  }
+
   if (p.status === 'moving') {
     const a = p.activity;
-    if (a.problemPending) {
+    const offline = !!catchupBuffer;
+    if (p.enduring && p.fatigue >= 100 && p.hunger >= 100) {
+      // Truly unrecoverable — but never let it happen silently while the
+      // player was away. Offline, freeze right here so they resume live at
+      // this exact critical moment with a real choice; online, it's game over.
+      if (offline) { triggerExhausted(a); offlinePauseRequested = true; }
+      else { state.gameOver = 'starved'; log('Голод и истощение накрыли одновременно прямо в пути — курьер не выдержал. Дело закрыто.'); }
+    } else if (a.problemPending) {
       p.hunger = clamp(p.hunger + HUNGER_RATE_STUCK * dt, 0, 100);
     } else {
       const spec = vehicleSpec();
@@ -1458,11 +1566,17 @@ function simulateTick(dt, summary) {
       const effSpeed = spec.speed * nightMult;
       const kmThisTick = effSpeed * (dt / 60);
       a.traveledKm = clamp(a.traveledKm + kmThisTick, 0, a.totalKm);
-      p.fatigue = clamp(p.fatigue + spec.fat * kmThisTick, 0, 100);
+      const enduranceMult = p.enduring ? ENDURE_FATIGUE_MULT : 1;
+      p.fatigue = clamp(p.fatigue + spec.fat * kmThisTick * enduranceMult, 0, 100);
       p.hunger = clamp(p.hunger + HUNGER_RATE_MOVING * dt, 0, 100);
       if (p.hunger >= 90 && p.hunger < 100 && !p.offeredFoodDelivery) {
         p.offeredFoodDelivery = true;
-        offerFoodDelivery();
+        if (offline) {
+          if (state.money >= foodDeliveryPrice()) orderFoodDelivery();
+          else startEnduring();
+        } else {
+          offerFoodDelivery();
+        }
       }
       p.vehicle.condition = clamp(p.vehicle.condition - kmThisTick * WEAR_PER_KM, 0, 100);
       if (spec.fuel !== 'legs') p.vehicle.fuel = clamp(p.vehicle.fuel - kmThisTick, 0, spec.tank);
@@ -1474,10 +1588,20 @@ function simulateTick(dt, summary) {
         if (Math.random() < breakdownChanceMod) {
           triggerBreakdown(a);
           if (summary) summary.incidents++;
+          if (offline) resolveOfflineBreakdown(a);
         }
       } else if (p.fatigue >= 100 || p.hunger >= 100) {
-        triggerExhausted(a);
-        if (summary) summary.incidents++;
+        if (offline) {
+          if (p.hunger >= 100 && state.money >= foodDeliveryPrice()) {
+            orderFoodDelivery();
+          } else {
+            p.fatigue = 40;
+            log('Автоматически отдохнул на обочине (пока был офлайн)', { silent: true });
+          }
+        } else {
+          triggerExhausted(a);
+          if (summary) summary.incidents++;
+        }
       } else if (a.traveledKm >= a.totalKm) {
         onArrive(a.targetId);
       }
@@ -1494,6 +1618,7 @@ function simulateTick(dt, summary) {
     p.eatElapsed += dt;
     if (p.eatElapsed >= p.eatPlan.totalMinutes) {
       p.hunger = clamp(p.hunger - p.eatPlan.hungerRelief, 0, 100);
+      p.enduring = false;
       log(`Поел: ${p.eatPlan.label}`);
       p.status = 'idle'; p.eatPlan = null;
     }
@@ -1527,6 +1652,8 @@ function runOfflineCatchup() {
   if (elapsedMs > MAX_OFFLINE_MS) elapsedMs = MAX_OFFLINE_MS;
   const totalGameMinutes = (elapsedMs / 1000) * GAME_MIN_PER_REAL_SEC;
   catchupBuffer = [];
+  offlinePauseRequested = false;
+  offlineAutoTally = { meals: 0, foodSpent: 0, sleeps: 0, sleepSpent: 0 };
   const summary = { jobsCompleted: 0, incidents: 0, moneyBefore: state.money };
   let remaining = totalGameMinutes;
   const step = 20;
@@ -1536,12 +1663,15 @@ function runOfflineCatchup() {
     simulateTick(dt, summary);
     if (state.stats.jobsCompleted > before) summary.jobsCompleted++;
     remaining -= dt;
-    if (state.gameOver) break;
+    if (state.gameOver || offlinePauseRequested) break;
   }
   summary.netMoneyChange = Math.round(state.money - summary.moneyBefore);
   summary.bankrupt = state.gameOver === 'bankruptcy';
+  summary.paused = offlinePauseRequested;
+  summary.auto = offlineAutoTally;
   summary.entries = catchupBuffer;
   catchupBuffer = null;
+  offlineAutoTally = null;
   state.lastRealTimestamp = now;
   maintainJobPool();
   return summary;
@@ -1875,6 +2005,7 @@ function drawRouteHighlight(toPxWorld) {
   ctx.lineWidth = 3.5;
   ctx.lineCap = 'round';
   ctx.setLineDash([9, 6]);
+  ctx.lineDashOffset = -(performance.now() / 40 % 15); // marching-ants: crawl the dashes along the route
   for (let i = 0; i < path.length - 1; i++) {
     const aId = path[i], bId = path[i + 1];
     const space = edgeSpace(aId, bId);
@@ -2270,25 +2401,35 @@ function renderOrdersCount() {
   el('orders-count').textContent = state.availableJobs.length;
 }
 
-const orderFilters = { storage: 'all', urgency: 'all', fitsOnly: false };
+const orderFilters = { storage: 'all', urgency: 'all', fitsOnly: false, sameCity: false, sort: 'default' };
 
 function renderOrdersList() {
   if (el('orders-modal').classList.contains('hidden')) return;
   const canTakeMore = state.player.jobs.filter(j => !j.pickedUp).length < MAX_PENDING_JOBS;
-  const signature = canTakeMore + '|' + state.availableJobs.map(j => j.id).join(',') + '|' + JSON.stringify(orderFilters);
+  const signature = canTakeMore + '|' + state.player.positionId + '|' + state.availableJobs.map(j => j.id).join(',') + '|' + JSON.stringify(orderFilters);
   const now = Date.now();
   if (signature === lastOrdersSignature && now - lastOrdersRenderRealTime < 1000) return;
   lastOrdersSignature = signature;
   lastOrdersRenderRealTime = now;
 
+  const playerCity = pointSpace(state.player.positionId);
   const ul = el('orders-list');
   ul.innerHTML = '';
-  const filtered = state.availableJobs.filter(job => {
+  let filtered = state.availableJobs.filter(job => {
     if (orderFilters.storage !== 'all' && job.storage !== orderFilters.storage) return false;
     if (orderFilters.urgency !== 'all' && job.urgencyKey !== orderFilters.urgency) return false;
     if (orderFilters.fitsOnly && !jobFitsVehicle(job)) return false;
+    if (orderFilters.sameCity && pointSpace(job.fromId) !== playerCity) return false;
     return true;
   });
+  if (orderFilters.sort === 'distance') {
+    filtered = filtered.map(job => ({ job, pickupKm: pathDistanceKm(shortestPath(state.player.positionId, job.fromId)) }))
+      .sort((a, b) => a.pickupKm - b.pickupKm).map(x => x.job);
+  } else if (orderFilters.sort === 'price_desc') {
+    filtered = filtered.slice().sort((a, b) => b.payout - a.payout);
+  } else if (orderFilters.sort === 'price_asc') {
+    filtered = filtered.slice().sort((a, b) => a.payout - b.payout);
+  }
   if (filtered.length === 0) {
     const li = document.createElement('li');
     li.textContent = 'Нет заказов по этим фильтрам';
@@ -2301,8 +2442,10 @@ function renderOrdersList() {
     li.className = fits ? 'job-fit' : 'job-nofit';
     const info = document.createElement('div');
     info.className = 'job-info';
+    const pickupKm = orderFilters.sort === 'distance' ? pathDistanceKm(shortestPath(state.player.positionId, job.fromId)) : null;
+    const pickupDistTag = pickupKm !== null ? ` · забрать за ${formatKm(pickupKm)} км` : '';
     info.innerHTML = `<div>${STORAGE_GLYPH[job.storage]} <b>${job.itemName}</b> — ${job.weightKg} кг / ${formatVolumeM3(job.volumeL)}</div>` +
-      `<div class="job-sub">${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)} · ${job.distanceKm} км</div>` +
+      `<div class="job-sub">${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)} · ${job.distanceKm} км${pickupDistTag}</div>` +
       `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!fits ? ' · не подходит' : ''}</div>`;
     const pay = document.createElement('span');
     pay.className = 'job-pay';
@@ -2387,9 +2530,10 @@ function openProblemModal(action) {
   el('problem-text').textContent = action.text;
   const actionsBox = el('problem-actions');
   actionsBox.innerHTML = '';
-  const addBtn = (label, choice) => {
+  const addBtn = (label, choice, disabled) => {
     const b = document.createElement('button');
     b.textContent = label;
+    b.disabled = !!disabled;
     b.onclick = () => { resolvePendingAction(action.id, choice); el('problem-modal').classList.add('hidden'); renderAll(); };
     actionsBox.appendChild(b);
   };
@@ -2406,11 +2550,11 @@ function openProblemModal(action) {
   } else if (action.kind === 'exhausted') {
     addBtn('Отдохнуть на обочине', 'ignore');
     if (state.player.hunger >= 60) {
-      addBtn(`🍔 Заказать доставку еды — ${foodDeliveryPrice()} ₽`, 'deliver');
+      addBtn(`🍔 Заказать доставку еды — ${foodDeliveryPrice()} ₽`, 'deliver', state.money < foodDeliveryPrice());
     }
   } else if (action.kind === 'hungry') {
-    addBtn(`🍔 Заказать доставку — ${foodDeliveryPrice()} ₽`, 'deliver');
-    addBtn('Потерпеть', 'ignore');
+    addBtn(`🍔 Заказать доставку — ${foodDeliveryPrice()} ₽`, 'deliver', state.money < foodDeliveryPrice());
+    addBtn('Потерпеть (энергия будет таять втрое быстрее)', 'endure');
   }
   el('problem-modal').classList.remove('hidden');
 }
@@ -2418,18 +2562,19 @@ function openProblemModal(action) {
 let lastToastSignature = null;
 function renderToasts() {
   const now = Date.now();
-  toasts = toasts.filter(t => t.expiresAt > now);
-  const signature = toasts.map(t => `${t.id}:${now >= t.expiresAt - TOAST_EXIT_MS}`).join(',');
+  toasts = toasts.filter(t => t.persistent || t.expiresAt > now);
+  const signature = toasts.map(t => `${t.id}:${t.persistent ? leavingToastIds.has(t.id) : now >= t.expiresAt - TOAST_EXIT_MS}`).join(',');
   if (signature === lastToastSignature) return;
   lastToastSignature = signature;
 
   const area = el('toast-area');
   area.innerHTML = '';
   toasts.forEach(t => {
-    const leaving = now >= t.expiresAt - TOAST_EXIT_MS;
+    const leaving = t.persistent ? leavingToastIds.has(t.id) : now >= t.expiresAt - TOAST_EXIT_MS;
     const div = document.createElement('div');
-    div.className = 'toast';
+    div.className = 'toast' + (t.persistent ? ' toast-persistent' : '');
     div.textContent = t.text;
+    if (t.persistent && !leaving) div.onclick = () => dismissToast(t.id);
     area.appendChild(div);
     if (leaving) {
       // Fly precisely into the diary icon regardless of screen size: measure both
@@ -2456,6 +2601,7 @@ function renderDiaryList(container, entries) {
 
 function renderAll() {
   if (state.gameOver === 'bankruptcy') showBankruptcyModal();
+  if (state.gameOver === 'starved') showStarvedModal();
   el('hud-money').textContent = `${Math.round(state.money)} ₽`;
   el('hud-money').style.color = state.money < 0 ? '#d9534f' : '';
   el('hud-time').textContent = formatTime(state.gameTime);
@@ -2728,12 +2874,24 @@ function showMenuScreen() {
 function showOfflineSummary(summary) {
   if (!summary) return;
   if (summary.bankrupt) { showBankruptcyModal(); return; }
-  if (summary.entries.length === 0 && summary.netMoneyChange === 0) return;
+  if (summary.entries.length === 0 && summary.netMoneyChange === 0 && !summary.paused) return;
   const sign = summary.netMoneyChange > 0 ? '+' : '';
-  el('offline-header').textContent =
-    `Доставлено заказов: ${summary.jobsCompleted}. Происшествий: ${summary.incidents}. Баланс изменился: ${sign}${summary.netMoneyChange} ₽.`;
+  el('offline-header').textContent = `Доставлено заказов: ${summary.jobsCompleted}. Происшествий: ${summary.incidents}. Баланс изменился: ${sign}${summary.netMoneyChange} ₽.`;
   renderDiaryList(el('offline-list'), summary.entries.slice(0, 60));
   el('offline-modal').classList.remove('hidden');
+
+  // Auto-care spending and an unresolved crisis are important enough that they
+  // shouldn't just be a line in a summary you tap "Понятно" past once — they sit
+  // as their own persistent notifications until the player deliberately dismisses each.
+  if (summary.auto && (summary.auto.meals > 0 || summary.auto.sleeps > 0)) {
+    const parts = [];
+    if (summary.auto.meals > 0) parts.push(`поел ${summary.auto.meals} раз (${summary.auto.foodSpent} ₽)`);
+    if (summary.auto.sleeps > 0) parts.push(`поспал ${summary.auto.sleeps} раз (${summary.auto.sleepSpent} ₽)`);
+    toast(`Пока тебя не было — автоматически: ${parts.join(', ')}.`, { persistent: true });
+  }
+  if (summary.paused) {
+    toast('⚠️ Пока тебя не было, у курьера кончились деньги на еду, и он терпит голод на свой страх и риск — сейчас самое время его спасти.', { persistent: true });
+  }
 }
 
 let bankruptcyShown = false;
@@ -2752,10 +2910,27 @@ el('btn-bankruptcy-restart').onclick = () => {
   showGameScreen();
 };
 
+let starvedShown = false;
+function showStarvedModal() {
+  if (starvedShown) return;
+  starvedShown = true;
+  el('starved-modal').classList.remove('hidden');
+}
+el('btn-starved-restart').onclick = () => {
+  el('starved-modal').classList.add('hidden');
+  starvedShown = false;
+  state = newGameState();
+  jobIdSeq = 1;
+  initDailyEconomy();
+  saveGame();
+  showGameScreen();
+};
+
 el('btn-new-game').onclick = () => {
   state = newGameState();
   jobIdSeq = 1;
   bankruptcyShown = false;
+  starvedShown = false;
   initDailyEconomy();
   saveGame();
   showGameScreen();
@@ -2764,6 +2939,7 @@ el('btn-new-game').onclick = () => {
 el('btn-continue').onclick = () => {
   if (!loadGame()) return;
   bankruptcyShown = false;
+  starvedShown = false;
   const summary = runOfflineCatchup();
   saveGame();
   showGameScreen();
@@ -2820,6 +2996,8 @@ el('btn-orders-close').onclick = () => el('orders-modal').classList.add('hidden'
 el('filter-storage').onchange = (e) => { orderFilters.storage = e.target.value; lastOrdersSignature = null; renderOrdersList(); };
 el('filter-urgency').onchange = (e) => { orderFilters.urgency = e.target.value; lastOrdersSignature = null; renderOrdersList(); };
 el('filter-fits-only').onchange = (e) => { orderFilters.fitsOnly = e.target.checked; lastOrdersSignature = null; renderOrdersList(); };
+el('filter-same-city').onchange = (e) => { orderFilters.sameCity = e.target.checked; lastOrdersSignature = null; renderOrdersList(); };
+el('sort-orders').onchange = (e) => { orderFilters.sort = e.target.value; lastOrdersSignature = null; renderOrdersList(); };
 
 el('btn-open-garage').onclick = () => openGarage();
 el('btn-garage-close').onclick = () => el('garage-modal').classList.add('hidden');

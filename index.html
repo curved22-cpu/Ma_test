@@ -82,6 +82,14 @@
     </div>
   </div>
 
+  <div id="starved-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Курьер не выдержал</h2>
+      <p>Голод и истощение накрыли одновременно прямо в пути. Организм не выдержал — дело закрыто.</p>
+      <button id="btn-starved-restart">Начать заново</button>
+    </div>
+  </div>
+
   <div id="diary-modal" class="modal hidden">
     <div class="modal-box">
       <h2>Дневник</h2>
@@ -132,6 +140,13 @@
           <option value="none">∞ Без срока</option>
         </select>
         <label class="filter-checkbox"><input type="checkbox" id="filter-fits-only"> Только подходящие</label>
+        <label class="filter-checkbox"><input type="checkbox" id="filter-same-city"> Только этот город</label>
+        <select id="sort-orders">
+          <option value="default">Сортировка: по умолчанию</option>
+          <option value="distance">📍 Сначала ближе (забрать)</option>
+          <option value="price_desc">💰 Сначала дороже</option>
+          <option value="price_asc">💰 Сначала дешевле</option>
+        </select>
       </div>
       <ul id="orders-list" class="job-list"></ul>
       <button id="btn-orders-close">Закрыть</button>
