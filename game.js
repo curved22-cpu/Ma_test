@@ -1437,6 +1437,7 @@ let touchPanState = null;
 let pinchState = null;
 canvas.addEventListener('touchstart', (e) => {
   if (!state) return;
+  e.preventDefault();
   cameraTween = null;
   if (e.touches.length === 1) {
     touchPanState = { startX: e.touches[0].clientX, startY: e.touches[0].clientY, camX: camera.x, camY: camera.y, moved: false };
@@ -1451,8 +1452,10 @@ canvas.addEventListener('touchstart', (e) => {
       worldMid: { x: (midX - rect.width / 2) / camera.zoom + camera.x, y: (midY - rect.height / 2) / camera.zoom + camera.y },
     };
   }
-}, { passive: true });
+}, { passive: false });
 canvas.addEventListener('touchmove', (e) => {
+  if (!state) return;
+  e.preventDefault();
   if (e.touches.length === 1 && touchPanState) {
     const dx = e.touches[0].clientX - touchPanState.startX, dy = e.touches[0].clientY - touchPanState.startY;
     if (Math.hypot(dx, dy) > 4) touchPanState.moved = true;
@@ -1467,7 +1470,7 @@ canvas.addEventListener('touchmove', (e) => {
     camera.x = pinchState.worldMid.x - (midX - rect.width / 2) / camera.zoom;
     camera.y = pinchState.worldMid.y - (midY - rect.height / 2) / camera.zoom;
   }
-}, { passive: true });
+}, { passive: false });
 canvas.addEventListener('touchend', (e) => {
   if (e.touches.length === 0 && touchPanState && !touchPanState.moved) {
     const rect = canvas.getBoundingClientRect();

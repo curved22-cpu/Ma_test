@@ -50,6 +50,8 @@ button:disabled { opacity: 0.4; cursor: default; }
   border-radius: 12px;
   margin: 12px 0;
   display: block;
+  touch-action: none;
+  -ms-touch-action: none;
 }
 
 .panel {
