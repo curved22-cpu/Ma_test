@@ -1833,9 +1833,10 @@ function renderAll() {
   el('hud-money').textContent = `${Math.round(state.money)} ₽`;
   el('hud-money').style.color = state.money < 0 ? '#d9534f' : '';
   el('hud-time').textContent = formatTime(state.gameTime);
-  el('bar-fatigue').style.width = `${state.player.fatigue}%`;
-  el('bar-hunger').style.width = `${state.player.hunger}%`;
-  el('bar-condition').style.width = `${state.player.vehicle.condition}%`;
+  // Displayed inverted: these read as energy/satiety, so the bar drains as
+  // fatigue/hunger (the underlying tracked values) climb toward exhausted/hungry.
+  el('bar-fatigue').style.width = `${100 - state.player.fatigue}%`;
+  el('bar-hunger').style.width = `${100 - state.player.hunger}%`;
   renderStatusPanel();
   renderPendingActions();
   renderPointPanel();
