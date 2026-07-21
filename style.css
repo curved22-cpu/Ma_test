@@ -64,8 +64,12 @@ button:disabled { opacity: 0.4; cursor: default; }
 .point-panel-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .point-panel-buttons button { flex: 1; min-width: 120px; }
 
-#current-job-panel { border: 1px solid #4a9dd1; background: #16232c; font-size: 0.88rem; }
-#current-job-panel button { margin-top: 8px; width: 100%; }
+#cargo-panel { border: 1px solid #4a9dd1; background: #16232c; font-size: 0.88rem; }
+.cargo-bar-label { font-weight: 600; margin-bottom: 6px; }
+.cargo-list { list-style: none; padding: 0; margin: 0; }
+.cargo-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #1e2934; border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 0.85rem; }
+.cargo-list .cargo-info { flex: 1; }
+.cargo-list button { flex-shrink: 0; padding: 8px 10px; font-size: 0.85rem; }
 
 .notify-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .notify-card {
@@ -94,11 +98,17 @@ button:disabled { opacity: 0.4; cursor: default; }
 .job-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .job-list .job-info { flex: 1; }
 .job-list .job-pay { font-weight: 600; color: #7fd17f; white-space: nowrap; }
+.job-sub { color: #9aa4b2; font-size: 0.78rem; margin-top: 2px; }
 .diary-list li { color: #9aa4b2; font-size: 0.82rem; }
 .diary-list li:first-child { color: #eee; }
 
-.shop-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.shop-list { max-height: 50vh; overflow-y: auto; }
+.shop-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; text-align: left; }
 .shop-list button { flex-shrink: 0; }
+.shop-cat-header { background: none !important; color: #7fa1c9; font-weight: 700; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 2px 2px !important; margin-bottom: 2px !important; }
+.shop-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+.shop-tabs .shop-tab { flex: 1; margin-top: 0; opacity: 0.6; }
+.shop-tabs .shop-tab.active { opacity: 1; border-color: #4a9dd1; }
 
 .modal {
   position: fixed; inset: 0;

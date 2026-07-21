@@ -55,7 +55,7 @@
 
     <div id="actions-notify" class="notify-list"></div>
 
-    <div id="current-job-panel" class="panel hidden"></div>
+    <div id="cargo-panel" class="panel hidden"></div>
 
     <div id="status-panel" class="panel"></div>
 
@@ -92,7 +92,11 @@
 
   <div id="shop-modal" class="modal hidden">
     <div class="modal-box">
-      <h2>Магазин техники</h2>
+      <h2>Магазин</h2>
+      <div class="shop-tabs">
+        <button id="shop-tab-vehicles" class="shop-tab active">Транспорт</button>
+        <button id="shop-tab-equipment" class="shop-tab">Снаряжение</button>
+      </div>
       <ul id="shop-list" class="shop-list"></ul>
       <button id="btn-shop-close">Закрыть</button>
     </div>

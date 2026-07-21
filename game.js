@@ -1,145 +1,25 @@
 'use strict';
 
-const SAVE_KEY = 'courier_save_v3';
+const SAVE_KEY = 'courier_save_v5';
 const TIME_SCALE = 100; // game runs 100x faster than real life (testing value)
 const GAME_MIN_PER_REAL_SEC = TIME_SCALE / 60;
 const DAY_START_OFFSET = 8 * 60; // game clock begins at Day 1, 08:00
 const MAX_OFFLINE_MS = 60 * 24 * 3600 * 1000; // cap catch-up at 60 real days
 const TOAST_DURATION_MS = 10000;
-
-const POINT_STYLES = {
-  home: { color: '#e2a63b', glyph: '🏠' },
-  cafe: { color: '#d98a3d', glyph: '☕' },
-  shop: { color: '#8a63d2', glyph: '🛵' },
-  workshop: { color: '#5c8fd6', glyph: '🔧' },
-  delivery: { color: '#4a9dd1', glyph: '📦' },
-};
-
-// ---------- home city (Ривное) — the only playable city ----------
-
-const CITY_POINTS = [
-  { id: 'home', name: 'Дом', type: 'home', x: 12, y: 50 },
-  { id: 'cafe', name: 'Кафе «Уют»', type: 'cafe', x: 35, y: 40 },
-  { id: 'shop', name: 'Магазин техники «Скорость»', type: 'shop', x: 70, y: 28 },
-  { id: 'workshop', name: 'Мастерская «Гайка»', type: 'workshop', x: 78, y: 55 },
-  { id: 'warehouse', name: 'Склад «Логист»', type: 'delivery', x: 50, y: 50 },
-  { id: 'mall', name: 'ТЦ Горизонт', type: 'delivery', x: 22, y: 15 },
-  { id: 'bus', name: 'Автовокзал', type: 'delivery', x: 85, y: 15 },
-  { id: 'hospital', name: 'Больница №1', type: 'delivery', x: 60, y: 8 },
-  { id: 'market', name: 'Рынок', type: 'delivery', x: 28, y: 66 },
-  { id: 'district', name: 'Спальный район', type: 'delivery', x: 85, y: 85 },
-  { id: 'park', name: 'Парк Победы', type: 'delivery', x: 15, y: 82 },
-];
-
-const ROAD_EDGES = [
-  ['home', 'park'], ['home', 'cafe'],
-  ['cafe', 'mall'], ['cafe', 'market'], ['cafe', 'shop'], ['cafe', 'warehouse'],
-  ['mall', 'bus'], ['mall', 'hospital'], ['mall', 'warehouse'],
-  ['bus', 'hospital'], ['bus', 'shop'],
-  ['shop', 'workshop'], ['shop', 'hospital'], ['shop', 'warehouse'],
-  ['workshop', 'district'],
-  ['market', 'park'], ['market', 'district'], ['market', 'warehouse'],
-  ['park', 'district'],
-];
-
-// ---------- country map — Ривное is one of several cities ----------
-
-const COUNTRY_NAME = 'Залесье';
-
-const COUNTRY_CITIES = [
-  { id: 'rivnoe', name: 'Ривное', x: 26, y: 58, playable: true },
-  { id: 'zarechye', name: 'Заречье', x: 54, y: 30 },
-  { id: 'sosnovka', name: 'Сосновка', x: 78, y: 60 },
-  { id: 'gorki', name: 'Горки', x: 18, y: 22 },
-  { id: 'lugovoe', name: 'Луговое', x: 48, y: 84 },
-  { id: 'berezovo', name: 'Берёзово', x: 86, y: 22 },
-  { id: 'kamensk', name: 'Каменск', x: 62, y: 68 },
-];
-
-const COUNTRY_ROAD_EDGES = [
-  ['rivnoe', 'zarechye'], ['rivnoe', 'gorki'], ['rivnoe', 'lugovoe'],
-  ['zarechye', 'gorki'], ['zarechye', 'berezovo'], ['zarechye', 'sosnovka'],
-  ['sosnovka', 'berezovo'], ['sosnovka', 'kamensk'], ['sosnovka', 'lugovoe'],
-  ['kamensk', 'lugovoe'],
-];
-
-function cityById(id) { return COUNTRY_CITIES.find(c => c.id === id); }
-
-const CITY_LAYOUT_CACHE = {};
-function getCityLayout(cityId) {
-  if (cityId === 'rivnoe') return { points: CITY_POINTS, edges: ROAD_EDGES };
-  if (CITY_LAYOUT_CACHE[cityId]) return CITY_LAYOUT_CACHE[cityId];
-  const rng = seededRandom(hashStr('layout:' + cityId));
-  const count = 6 + Math.floor(rng() * 4);
-  const types = ['cafe', 'shop', 'workshop', 'delivery', 'delivery', 'delivery'];
-  const points = [];
-  for (let i = 0; i < count; i++) {
-    points.push({
-      id: `${cityId}_p${i}`,
-      name: i === 0 ? 'Центр' : `Точка ${i}`,
-      type: i === 0 ? 'delivery' : types[Math.floor(rng() * types.length)],
-      x: 14 + rng() * 72,
-      y: 14 + rng() * 72,
-    });
-  }
-  const edges = [];
-  for (let i = 1; i < points.length; i++) {
-    const j = Math.floor(rng() * i);
-    edges.push([points[i].id, points[j].id]);
-  }
-  const extra = Math.floor(rng() * 3);
-  for (let i = 0; i < extra; i++) {
-    const a = points[Math.floor(rng() * points.length)];
-    const b = points[Math.floor(rng() * points.length)];
-    if (a.id !== b.id) edges.push([a.id, b.id]);
-  }
-  const layout = { points, edges };
-  CITY_LAYOUT_CACHE[cityId] = layout;
-  return layout;
-}
-
-const VEHICLES = [
-  { id: 'bike', name: 'Велосипед', speedKmh: 15, price: 0 },
-  { id: 'ebike', name: 'Электровелосипед', speedKmh: 25, price: 25000 },
-  { id: 'moped', name: 'Мопед', speedKmh: 45, price: 90000 },
-];
-
-const BREAKDOWN_TYPES = [
-  { id: 'flat_tire', label: 'Спустило колесо', severity: 'minor', selfFixCost: 250, selfFixMinutes: 15, ignorePenalty: 1.15 },
-  { id: 'chain', label: 'Слетела цепь', severity: 'minor', selfFixCost: 150, selfFixMinutes: 8, ignorePenalty: 1.1 },
-  { id: 'wheel_bent', label: 'Погнулось колесо', severity: 'severe', towCost: 2000, towMinutes: 40 },
-  { id: 'frame_crack', label: 'Треснула рама', severity: 'severe', towCost: 4000, towMinutes: 70 },
-];
-
-const FATIGUE_RATE_MOVING = 0.35; // per game-minute
-const HUNGER_RATE_MOVING = 0.18;
-const HUNGER_RATE_IDLE = 0.12;
-const HUNGER_RATE_RESTING = 0.08;
-const HUNGER_RATE_STUCK = 0.06;
+const CITY_KM_PER_UNIT = 0.08;   // city-local map scale (a walkable town, not a 50km sprawl)
+const COUNTRY_KM_PER_UNIT = 3;   // country map scale (cross-country distances)
+const NIGHT_START_MIN = 22 * 60;
+const NIGHT_END_MIN = 6 * 60;
+const NIGHT_SPEED_MULT = 0.7;
 const WEAR_PER_KM = 0.5;
 const WORKSHOP_REPAIR_COST = 600;
 const UPGRADE_COST = 4000;
-
-const EAT_OPTIONS = [
-  { id: 'snack', label: 'Перекусить', minutes: 15, hungerRelief: 45 },
-  { id: 'meal', label: 'Плотно поесть', minutes: 35, hungerRelief: 100 },
-];
-const EAT_PRICE_CAFE = { snack: 150, meal: 350 };
-
-const SLEEP_OPTIONS = [
-  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30 },
-  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, fatigueRelief: 70 },
-  { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, fatigueRelief: 100 },
-];
-const IDLE_HOME_OPTION = { id: 'breathe', label: 'Просто отдохнуть, не ложась', minutes: 20, fatigueRelief: 10 };
-
+const MAX_PENDING_JOBS = 3;
 const START_MONEY = 500;
 
 function rand(min, max) { return min + Math.random() * (max - min); }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-function pointById(id) { return CITY_POINTS.find(p => p.id === id); }
-
 function hashStr(str) {
   let h = 0;
   for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
@@ -150,6 +30,251 @@ function seededRandom(seed) {
   if (s <= 0) s += 2147483646;
   return function () { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
 }
+function pickSeeded(arr, rng) { return arr[Math.floor(rng() * arr.length)]; }
+
+// ---------- vehicles ----------
+// cat: foot | scooter | bike | moped | motorcycle | car | van | truck
+// fuel: legs | electric | gasoline | diesel   (legs/electric never "run out" mid-trip in a blocking way handled below)
+// draw: how the animated marker is rendered — 'foot' | 'twowheel' | 'car' | 'truck'
+
+const VEHICLES = [
+  { id: 'foot', name: 'Пешком', cat: 'foot', draw: 'foot', speed: 5, price: 0, kg: 5, l: 10, fat: 3.0, trip: 8, fuel: 'legs', tank: Infinity },
+
+  { id: 'scoot_manual1', name: 'Самокат простой', cat: 'scooter', draw: 'twowheel', speed: 10, price: 1200, kg: 3, l: 5, fat: 2.4, trip: 4, fuel: 'legs', tank: Infinity },
+  { id: 'scoot_manual2', name: 'Самокат спортивный', cat: 'scooter', draw: 'twowheel', speed: 13, price: 3200, kg: 4, l: 6, fat: 2.1, trip: 5, fuel: 'legs', tank: Infinity },
+  { id: 'scoot_e1', name: 'Электросамокат бюджетный', cat: 'scooter', draw: 'twowheel', speed: 20, price: 12000, kg: 5, l: 8, fat: 0.5, trip: 15, fuel: 'electric', tank: 20 },
+  { id: 'scoot_e2', name: 'Электросамокат городской', cat: 'scooter', draw: 'twowheel', speed: 25, price: 20000, kg: 6, l: 10, fat: 0.4, trip: 20, fuel: 'electric', tank: 30 },
+  { id: 'scoot_e3', name: 'Электросамокат мощный', cat: 'scooter', draw: 'twowheel', speed: 32, price: 35000, kg: 8, l: 12, fat: 0.35, trip: 25, fuel: 'electric', tank: 40 },
+  { id: 'scoot_e4', name: 'Электросамокат внедорожный', cat: 'scooter', draw: 'twowheel', speed: 38, price: 55000, kg: 10, l: 15, fat: 0.3, trip: 35, fuel: 'electric', tank: 50 },
+
+  { id: 'bike_city', name: 'Городской велосипед', cat: 'bike', draw: 'twowheel', speed: 15, price: 6000, kg: 8, l: 15, fat: 1.8, trip: 12, fuel: 'legs', tank: Infinity },
+  { id: 'bike_fold', name: 'Складной велосипед', cat: 'bike', draw: 'twowheel', speed: 14, price: 8000, kg: 7, l: 12, fat: 1.9, trip: 10, fuel: 'legs', tank: Infinity },
+  { id: 'bike_road', name: 'Шоссейный велосипед', cat: 'bike', draw: 'twowheel', speed: 22, price: 15000, kg: 6, l: 10, fat: 1.6, trip: 18, fuel: 'legs', tank: Infinity },
+  { id: 'bike_cargo', name: 'Грузовой велосипед (карго-байк)', cat: 'bike', draw: 'twowheel', speed: 16, price: 25000, kg: 40, l: 80, fat: 2.0, trip: 15, fuel: 'legs', tank: Infinity },
+  { id: 'bike_e1', name: 'Электровелосипед бюджетный', cat: 'bike', draw: 'twowheel', speed: 22, price: 30000, kg: 15, l: 25, fat: 0.5, trip: 30, fuel: 'electric', tank: 40 },
+  { id: 'bike_e2', name: 'Электровелосипед городской', cat: 'bike', draw: 'twowheel', speed: 27, price: 45000, kg: 18, l: 30, fat: 0.45, trip: 40, fuel: 'electric', tank: 55 },
+  { id: 'bike_e_cargo', name: 'Электрокарго-байк', cat: 'bike', draw: 'twowheel', speed: 24, price: 70000, kg: 60, l: 120, fat: 0.5, trip: 35, fuel: 'electric', tank: 50 },
+  { id: 'bike_e3', name: 'Электровелосипед мощный', cat: 'bike', draw: 'twowheel', speed: 32, price: 95000, kg: 20, l: 35, fat: 0.4, trip: 50, fuel: 'electric', tank: 70 },
+
+  { id: 'moped_50', name: 'Мопед 50 куб.см', cat: 'moped', draw: 'twowheel', speed: 45, price: 60000, kg: 15, l: 25, fat: 0.35, trip: 60, fuel: 'gasoline', tank: 90 },
+  { id: 'moped_cargo', name: 'Мопед грузовой', cat: 'moped', draw: 'twowheel', speed: 50, price: 110000, kg: 50, l: 90, fat: 0.35, trip: 70, fuel: 'gasoline', tank: 100 },
+  { id: 'scooter_city', name: 'Скутер городской', cat: 'moped', draw: 'twowheel', speed: 55, price: 85000, kg: 20, l: 35, fat: 0.3, trip: 80, fuel: 'gasoline', tank: 120 },
+  { id: 'scooter_tour', name: 'Скутер туристический', cat: 'moped', draw: 'twowheel', speed: 65, price: 120000, kg: 25, l: 40, fat: 0.3, trip: 100, fuel: 'gasoline', tank: 150 },
+  { id: 'escooter_moto', name: 'Электроскутер', cat: 'moped', draw: 'twowheel', speed: 60, price: 140000, kg: 25, l: 40, fat: 0.25, trip: 90, fuel: 'electric', tank: 110 },
+  { id: 'scooter_prem', name: 'Скутер премиум', cat: 'moped', draw: 'twowheel', speed: 70, price: 180000, kg: 28, l: 45, fat: 0.25, trip: 110, fuel: 'gasoline', tank: 160 },
+  { id: 'escooter_long', name: 'Электроскутер дальнобойный', cat: 'moped', draw: 'twowheel', speed: 65, price: 220000, kg: 30, l: 45, fat: 0.2, trip: 130, fuel: 'electric', tank: 160 },
+  { id: 'scooter_sport', name: 'Скутер спорт', cat: 'moped', draw: 'twowheel', speed: 80, price: 260000, kg: 20, l: 30, fat: 0.25, trip: 120, fuel: 'gasoline', tank: 150 },
+
+  { id: 'moto_125', name: 'Мотоцикл лёгкий 125cc', cat: 'motorcycle', draw: 'twowheel', speed: 90, price: 180000, kg: 20, l: 30, fat: 0.2, trip: 150, fuel: 'gasoline', tank: 200 },
+  { id: 'moto_enduro', name: 'Мотоцикл эндуро', cat: 'motorcycle', draw: 'twowheel', speed: 100, price: 320000, kg: 25, l: 35, fat: 0.2, trip: 180, fuel: 'gasoline', tank: 250 },
+  { id: 'moto_400', name: 'Мотоцикл городской 400cc', cat: 'motorcycle', draw: 'twowheel', speed: 110, price: 450000, kg: 25, l: 40, fat: 0.18, trip: 220, fuel: 'gasoline', tank: 300 },
+  { id: 'moto_tourer', name: 'Мотоцикл-турер', cat: 'motorcycle', draw: 'twowheel', speed: 120, price: 650000, kg: 35, l: 60, fat: 0.15, trip: 280, fuel: 'gasoline', tank: 380 },
+  { id: 'moto_sport', name: 'Мотоцикл спортивный', cat: 'motorcycle', draw: 'twowheel', speed: 140, price: 900000, kg: 15, l: 20, fat: 0.2, trip: 250, fuel: 'gasoline', tank: 320 },
+  { id: 'moto_prem', name: 'Мотоцикл премиум-турер', cat: 'motorcycle', draw: 'twowheel', speed: 130, price: 1400000, kg: 45, l: 80, fat: 0.13, trip: 350, fuel: 'gasoline', tank: 450 },
+
+  { id: 'car_sedan_used', name: 'Подержанный седан', cat: 'car', draw: 'car', speed: 90, price: 450000, kg: 300, l: 400, fat: 0.15, trip: 400, fuel: 'gasoline', tank: 500 },
+  { id: 'car_hatch', name: 'Компактный хэтчбек', cat: 'car', draw: 'car', speed: 100, price: 650000, kg: 320, l: 420, fat: 0.13, trip: 450, fuel: 'gasoline', tank: 550 },
+  { id: 'car_wagon', name: 'Универсал', cat: 'car', draw: 'car', speed: 100, price: 900000, kg: 400, l: 600, fat: 0.13, trip: 500, fuel: 'gasoline', tank: 600 },
+  { id: 'car_crossover', name: 'Кроссовер', cat: 'car', draw: 'car', speed: 110, price: 1300000, kg: 450, l: 650, fat: 0.12, trip: 550, fuel: 'gasoline', tank: 650 },
+  { id: 'car_business', name: 'Бизнес-седан', cat: 'car', draw: 'car', speed: 120, price: 1800000, kg: 400, l: 550, fat: 0.1, trip: 600, fuel: 'gasoline', tank: 700 },
+  { id: 'car_ev_city', name: 'Электромобиль городской', cat: 'car', draw: 'car', speed: 110, price: 2200000, kg: 400, l: 550, fat: 0.1, trip: 350, fuel: 'electric', tank: 400 },
+  { id: 'car_suv', name: 'Внедорожник', cat: 'car', draw: 'car', speed: 115, price: 2800000, kg: 600, l: 900, fat: 0.1, trip: 650, fuel: 'gasoline', tank: 800 },
+  { id: 'car_prem_sedan', name: 'Премиум седан', cat: 'car', draw: 'car', speed: 130, price: 3800000, kg: 400, l: 550, fat: 0.08, trip: 700, fuel: 'gasoline', tank: 850 },
+  { id: 'car_ev_prem', name: 'Электромобиль премиум', cat: 'car', draw: 'car', speed: 130, price: 5500000, kg: 500, l: 700, fat: 0.08, trip: 500, fuel: 'electric', tank: 550 },
+  { id: 'car_sport', name: 'Спорткар', cat: 'car', draw: 'car', speed: 150, price: 7000000, kg: 150, l: 200, fat: 0.1, trip: 600, fuel: 'gasoline', tank: 750 },
+
+  { id: 'van_small', name: 'Малый фургон', cat: 'van', draw: 'truck', speed: 90, price: 1200000, kg: 800, l: 2500, fat: 0.1, trip: 500, fuel: 'gasoline', tank: 700 },
+  { id: 'van_mid', name: 'Фургон средний', cat: 'van', draw: 'truck', speed: 90, price: 2200000, kg: 1500, l: 5000, fat: 0.1, trip: 600, fuel: 'gasoline', tank: 850 },
+  { id: 'van_fridge', name: 'Рефрижератор малый', cat: 'van', draw: 'truck', speed: 85, price: 3200000, kg: 1200, l: 4000, fat: 0.1, trip: 550, fuel: 'diesel', tank: 800, fridge: true },
+  { id: 'truck_mid', name: 'Грузовик среднетоннажный', cat: 'truck', draw: 'truck', speed: 80, price: 4500000, kg: 3500, l: 12000, fat: 0.08, trip: 700, fuel: 'diesel', tank: 1000 },
+  { id: 'truck_semi', name: 'Фура (полуприцеп)', cat: 'truck', draw: 'truck', speed: 85, price: 9000000, kg: 20000, l: 60000, fat: 0.06, trip: 1200, fuel: 'diesel', tank: 1800 },
+  { id: 'truck_semi_fridge', name: 'Рефрижератор-фура', cat: 'truck', draw: 'truck', speed: 85, price: 12000000, kg: 18000, l: 55000, fat: 0.06, trip: 1200, fuel: 'diesel', tank: 1800, fridge: true },
+  { id: 'truck_mega', name: 'Мега-фура премиум', cat: 'truck', draw: 'truck', speed: 90, price: 18000000, kg: 24000, l: 70000, fat: 0.05, trip: 1500, fuel: 'diesel', tank: 2200 },
+];
+const VEHICLE_BY_ID = {};
+VEHICLES.forEach(v => { VEHICLE_BY_ID[v.id] = v; });
+
+const CAT_GLYPH = { foot: '🚶', scooter: '🛴', bike: '🚲', moped: '🛵', motorcycle: '🏍️', car: '🚗', van: '🚐', truck: '🚚' };
+const CAT_LABEL = { foot: 'Пешком', scooter: 'Самокаты', bike: 'Велосипеды', moped: 'Мопеды и скутеры', motorcycle: 'Мотоциклы', car: 'Автомобили', van: 'Фургоны', truck: 'Грузовики' };
+const VEHICLE_CATS_ORDER = ['foot', 'scooter', 'bike', 'moped', 'motorcycle', 'car', 'van', 'truck'];
+
+const FUEL_COST_PER_KM_RANGE = { gasoline: 2.6, diesel: 2.2, electric: 1.1, legs: 0 };
+
+const BREAKDOWN_TYPES_TWOWHEEL = [
+  { id: 'flat_tire', label: 'Спустило колесо', severity: 'minor', selfFixCost: 250, selfFixMinutes: 15, ignorePenalty: 1.15 },
+  { id: 'chain', label: 'Слетела цепь', severity: 'minor', selfFixCost: 150, selfFixMinutes: 8, ignorePenalty: 1.1 },
+  { id: 'wheel_bent', label: 'Погнулось колесо', severity: 'severe', towCost: 2000, towMinutes: 40 },
+  { id: 'frame_crack', label: 'Треснула рама', severity: 'severe', towCost: 4000, towMinutes: 70 },
+];
+const BREAKDOWN_TYPES_MOTOR = [
+  { id: 'flat_tire_m', label: 'Прокол колеса', severity: 'minor', selfFixCost: 900, selfFixMinutes: 20, ignorePenalty: 1.1 },
+  { id: 'engine_trouble', label: 'Мелкая неисправность двигателя', severity: 'minor', selfFixCost: 1500, selfFixMinutes: 25, ignorePenalty: 1.15 },
+  { id: 'wheel_bent_m', label: 'Погнуло диск', severity: 'severe', towCost: 6000, towMinutes: 50 },
+  { id: 'transmission_fail', label: 'Отказала коробка передач', severity: 'severe', towCost: 15000, towMinutes: 90 },
+];
+function breakdownPoolFor(vehicleSpec) {
+  return (vehicleSpec.cat === 'foot' || vehicleSpec.cat === 'scooter' || vehicleSpec.cat === 'bike')
+    ? BREAKDOWN_TYPES_TWOWHEEL
+    : BREAKDOWN_TYPES_MOTOR;
+}
+
+// ---------- equipment ----------
+
+const EQUIPMENT = [
+  { id: 'thermal_bag', name: 'Термосумка', price: 2500, unlocks: ['chilled'] },
+  { id: 'fridge_box', name: 'Холодильный бокс (аккумуляторный)', price: 18000, unlocks: ['chilled', 'frozen'] },
+  { id: 'pet_carrier_small', name: 'Переноска для мелких животных', price: 3000, unlocks: ['live_small'] },
+  { id: 'pet_carrier_large', name: 'Клетка/переноска для крупных животных', price: 9000, unlocks: ['live_large'] },
+  { id: 'fragile_case', name: 'Кейс для хрупких грузов', price: 4000, unlocks: ['fragile'] },
+  { id: 'secure_case', name: 'Опломбированный кейс (ценности/документы)', price: 6000, unlocks: ['valuable'] },
+];
+
+const STORAGE_LABEL = { normal: 'обычные условия', chilled: 'нужна термосумка/холод', frozen: 'нужна заморозка', fragile: 'хрупкое', live_small: 'нужна переноска (мелкое животное)', live_large: 'нужна клетка (крупное животное)', valuable: 'нужен опломбированный кейс' };
+const STORAGE_GLYPH = { normal: '📦', chilled: '🧊', frozen: '❄️', fragile: '🥚', live_small: '🐾', live_large: '🐕', valuable: '💎' };
+
+// ---------- items & urgency ----------
+
+const ITEM_TEMPLATES = [
+  { name: 'Коробка с одеждой', storage: 'normal', weightKg: [1, 4], volumeL: [8, 20], urgency: ['none', 'standard'] },
+  { name: 'Книги', storage: 'normal', weightKg: [2, 8], volumeL: [5, 15], urgency: ['none'] },
+  { name: 'Электроника (гаджеты)', storage: 'fragile', weightKg: [0.3, 2], volumeL: [1, 5], urgency: ['standard', 'urgent'] },
+  { name: 'Ноутбук', storage: 'fragile', weightKg: [1.5, 3], volumeL: [3, 6], urgency: ['standard', 'urgent'] },
+  { name: 'Торт на заказ', storage: 'chilled', weightKg: [1, 3], volumeL: [8, 20], urgency: ['urgent'] },
+  { name: 'Мороженое (опт)', storage: 'frozen', weightKg: [3, 10], volumeL: [10, 25], urgency: ['urgent'] },
+  { name: 'Замороженные полуфабрикаты', storage: 'frozen', weightKg: [5, 15], volumeL: [15, 35], urgency: ['standard'] },
+  { name: 'Свежие продукты', storage: 'chilled', weightKg: [2, 10], volumeL: [10, 30], urgency: ['standard', 'urgent'] },
+  { name: 'Букет цветов', storage: 'fragile', weightKg: [0.5, 2], volumeL: [5, 15], urgency: ['urgent'] },
+  { name: 'Лекарства', storage: 'chilled', weightKg: [0.2, 2], volumeL: [1, 5], urgency: ['urgent'] },
+  { name: 'Документы', storage: 'valuable', weightKg: [0.1, 0.5], volumeL: [0.5, 1], urgency: ['urgent', 'standard'] },
+  { name: 'Ювелирные изделия', storage: 'valuable', weightKg: [0.1, 1], volumeL: [0.5, 2], urgency: ['standard'] },
+  { name: 'Кот в переноске', storage: 'live_small', weightKg: [3, 6], volumeL: [15, 25], urgency: ['standard'] },
+  { name: 'Небольшая собака', storage: 'live_small', weightKg: [5, 12], volumeL: [20, 35], urgency: ['standard'] },
+  { name: 'Крупная собака', storage: 'live_large', weightKg: [15, 40], volumeL: [40, 70], urgency: ['standard'] },
+  { name: 'Стройматериалы (мешки смеси)', storage: 'normal', weightKg: [20, 60], volumeL: [20, 50], urgency: ['none'] },
+  { name: 'Мебель (разобранная)', storage: 'normal', weightKg: [30, 120], volumeL: [100, 400], urgency: ['none', 'standard'] },
+  { name: 'Бытовая техника', storage: 'fragile', weightKg: [5, 40], volumeL: [20, 100], urgency: ['standard'] },
+  { name: 'Пицца/готовая еда', storage: 'chilled', weightKg: [1, 4], volumeL: [5, 15], urgency: ['urgent'] },
+  { name: 'Автозапчасти', storage: 'normal', weightKg: [2, 25], volumeL: [3, 30], urgency: ['standard', 'none'] },
+];
+
+const URGENCY_LEVELS = {
+  urgent: { label: 'Срочно', windowRealMs: 60 * 60 * 1000 },
+  standard: { label: 'Обычно', windowRealMs: 24 * 60 * 60 * 1000 },
+  none: { label: 'Без срока', windowRealMs: Infinity },
+};
+
+const POINT_STYLES = {
+  home: { color: '#e2a63b', glyph: '🏠' },
+  cafe: { color: '#d98a3d', glyph: '☕' },
+  shop: { color: '#8a63d2', glyph: '🛵' },
+  workshop: { color: '#5c8fd6', glyph: '🔧' },
+  delivery: { color: '#4a9dd1', glyph: '📦' },
+  gas: { color: '#d1574a', glyph: '⛽' },
+  waystop: { color: '#4aa17a', glyph: '⛽' },
+};
+
+// ---------- Ривное — стартовый (полностью авторский) город ----------
+
+const RIVNOE_POINTS_RAW = [
+  { id: 'home', name: 'Дом', type: 'home', x: 12, y: 50 },
+  { id: 'cafe', name: 'Кафе «Уют»', type: 'cafe', x: 35, y: 40 },
+  { id: 'shop', name: 'Магазин техники «Скорость»', type: 'shop', x: 70, y: 28 },
+  { id: 'workshop', name: 'Мастерская «Гайка»', type: 'workshop', x: 78, y: 55 },
+  { id: 'gas', name: 'АЗС «Полный бак»', type: 'gas', x: 45, y: 75 },
+  { id: 'warehouse', name: 'Склад «Логист»', type: 'delivery', x: 50, y: 50 },
+  { id: 'mall', name: 'ТЦ Горизонт', type: 'delivery', x: 22, y: 15 },
+  { id: 'bus', name: 'Автовокзал', type: 'delivery', x: 85, y: 15 },
+  { id: 'hospital', name: 'Больница №1', type: 'delivery', x: 60, y: 8 },
+  { id: 'market', name: 'Рынок', type: 'delivery', x: 28, y: 66 },
+  { id: 'district', name: 'Спальный район', type: 'delivery', x: 85, y: 85 },
+  { id: 'park', name: 'Парк Победы', type: 'delivery', x: 15, y: 82 },
+];
+const RIVNOE_EDGES_RAW = [
+  ['home', 'park'], ['home', 'cafe'],
+  ['cafe', 'mall'], ['cafe', 'market'], ['cafe', 'shop'], ['cafe', 'warehouse'],
+  ['mall', 'bus'], ['mall', 'hospital'], ['mall', 'warehouse'],
+  ['bus', 'hospital'], ['bus', 'shop'],
+  ['shop', 'workshop'], ['shop', 'hospital'], ['shop', 'warehouse'],
+  ['workshop', 'district'],
+  ['market', 'park'], ['market', 'district'], ['market', 'warehouse'],
+  ['park', 'district'],
+  ['market', 'gas'], ['warehouse', 'gas'],
+];
+
+// ---------- country cities ----------
+
+const COUNTRY_NAME = 'Залесье';
+const COUNTRY_CITIES = [
+  { id: 'rivnoe', name: 'Ривное', x: 26, y: 58 },
+  { id: 'zarechye', name: 'Заречье', x: 54, y: 30 },
+  { id: 'sosnovka', name: 'Сосновка', x: 78, y: 60 },
+  { id: 'gorki', name: 'Горки', x: 18, y: 22 },
+  { id: 'lugovoe', name: 'Луговое', x: 48, y: 84 },
+  { id: 'berezovo', name: 'Берёзово', x: 86, y: 22 },
+  { id: 'kamensk', name: 'Каменск', x: 62, y: 68 },
+];
+const COUNTRY_ROAD_EDGES = [
+  ['rivnoe', 'zarechye'], ['rivnoe', 'gorki'], ['rivnoe', 'lugovoe'],
+  ['zarechye', 'gorki'], ['zarechye', 'berezovo'], ['zarechye', 'sosnovka'],
+  ['sosnovka', 'berezovo'], ['sosnovka', 'kamensk'], ['sosnovka', 'lugovoe'],
+  ['kamensk', 'lugovoe'],
+];
+function cityMeta(id) { return COUNTRY_CITIES.find(c => c.id === id); }
+
+// Every city (incl. procedurally generated ones) gets: a namespaced point set,
+// a namespaced edge list, and exactly one "gate" point wired to the country
+// highway network. WORLD_POINTS/WORLD_EDGES accumulate everyone's points.
+const WORLD_POINTS = {};
+const WORLD_EDGES = [];
+
+function addCityDef(cityId, rawPoints, rawEdges, gateAnchorLocalId) {
+  rawPoints.forEach(p => {
+    WORLD_POINTS[`${cityId}:${p.id}`] = { id: `${cityId}:${p.id}`, name: p.name, type: p.type, x: p.x, y: p.y };
+  });
+  rawEdges.forEach(([a, b]) => WORLD_EDGES.push([`${cityId}:${a}`, `${cityId}:${b}`]));
+  const meta = cityMeta(cityId);
+  const gateId = `${cityId}:gate`;
+  WORLD_POINTS[gateId] = { id: gateId, name: 'Выезд на трассу', type: 'gate', x: 3, y: 50, countryX: meta.x, countryY: meta.y };
+  WORLD_EDGES.push([gateId, `${cityId}:${gateAnchorLocalId}`]);
+}
+
+addCityDef('rivnoe', RIVNOE_POINTS_RAW, RIVNOE_EDGES_RAW, 'home');
+
+function generateCityLayout(cityId) {
+  const rng = seededRandom(hashStr('layout:' + cityId));
+  const count = 7 + Math.floor(rng() * 3);
+  const fillerTypes = ['delivery', 'delivery', 'delivery', 'gas'];
+  const points = [
+    { id: 'p0', name: 'Центр', type: 'delivery', x: 45 + rng() * 10, y: 45 + rng() * 10 },
+    { id: 'p1', name: 'Кафе «Дорожное»', type: 'cafe', x: 20 + rng() * 20, y: 20 + rng() * 20 },
+    { id: 'p2', name: 'Магазин техники', type: 'shop', x: 65 + rng() * 20, y: 20 + rng() * 20 },
+    { id: 'p3', name: 'Мастерская', type: 'workshop', x: 65 + rng() * 20, y: 65 + rng() * 20 },
+  ];
+  for (let i = 4; i < count; i++) {
+    points.push({
+      id: `p${i}`, name: `Точка ${i}`,
+      type: pickSeeded(fillerTypes, rng),
+      x: 12 + rng() * 76, y: 12 + rng() * 76,
+    });
+  }
+  const edges = [];
+  for (let i = 1; i < points.length; i++) edges.push([points[i - 1].id, points[i].id]);
+  const extra = 1 + Math.floor(rng() * 3);
+  for (let i = 0; i < extra; i++) {
+    const a = points[Math.floor(rng() * points.length)];
+    const b = points[Math.floor(rng() * points.length)];
+    if (a.id !== b.id) edges.push([a.id, b.id]);
+  }
+  return { points, edges };
+}
+
+COUNTRY_CITIES.filter(c => c.id !== 'rivnoe').forEach(c => {
+  const layout = generateCityLayout(c.id);
+  addCityDef(c.id, layout.points, layout.edges, 'p0');
+});
+
+function pointSpace(id) { return id.startsWith('hwy:') ? 'country' : id.split(':')[0]; }
+function pointById(id) { return WORLD_POINTS[id]; }
 
 // ---------- winding roads: cached jittered polylines ----------
 
@@ -221,29 +346,82 @@ function getMapDecor(mapKey) {
   return decor;
 }
 
-// ---------- home-city road graph (with winding-road distances) ----------
+// ---------- highway chains between cities (with waystops) ----------
+
+COUNTRY_ROAD_EDGES.forEach(([cityAId, cityBId]) => {
+  const a = cityMeta(cityAId), b = cityMeta(cityBId);
+  const edgeKey = [cityAId, cityBId].slice().sort().join('-');
+  const fullPoly = windingPolyline(`country:${edgeKey}`, a, b, 7, 7);
+  const totalLenKm = polylineLengthUnits(fullPoly) * COUNTRY_KM_PER_UNIT;
+  const stopCount = clamp(Math.floor(totalLenKm / 45), 0, 3);
+  const fractions = [];
+  for (let i = 1; i <= stopCount; i++) fractions.push(i / (stopCount + 1));
+
+  let prevId = `${cityAId}:gate`;
+  fractions.forEach((f, i) => {
+    const pos = pointOnPolyline(fullPoly, f);
+    const stopId = `hwy:${edgeKey}:${i}`;
+    WORLD_POINTS[stopId] = { id: stopId, name: `Придорожная стоянка ${i + 1} (${a.name}—${b.name})`, type: 'waystop', x: pos.x, y: pos.y };
+    WORLD_EDGES.push([prevId, stopId]);
+    prevId = stopId;
+  });
+  WORLD_EDGES.push([prevId, `${cityBId}:gate`]);
+});
+
+const ALL_DELIVERY_POINT_IDS = Object.values(WORLD_POINTS).filter(p => p.type === 'delivery').map(p => p.id);
+const DELIVERY_BY_CITY = {};
+ALL_DELIVERY_POINT_IDS.forEach(id => {
+  const city = pointSpace(id);
+  (DELIVERY_BY_CITY[city] = DELIVERY_BY_CITY[city] || []).push(id);
+});
+const CITIES_WITH_DELIVERY = Object.keys(DELIVERY_BY_CITY).filter(c => DELIVERY_BY_CITY[c].length >= 2);
+
+// ---------- space-aware distance & pathfinding over the unified world graph ----------
+// An edge is "city-local" only if both endpoints belong to the same city
+// (using its own fine-grained 0-100 map + CITY_KM_PER_UNIT). Anything that
+// touches a highway node, or crosses between a gate and its own city, is
+// resolved in "country" space (using COUNTRY_KM_PER_UNIT and the point's
+// countryX/countryY when it has one — gates have both a local and a country
+// position, everything else has just one).
+
+function edgeSpace(aId, bId) {
+  const spaceA = pointSpace(aId), spaceB = pointSpace(bId);
+  return (spaceA === spaceB && spaceA !== 'country') ? spaceA : 'country';
+}
+function edgeCoord(id, space) {
+  const pt = WORLD_POINTS[id];
+  if (space === 'country' && pt.countryX !== undefined) return { x: pt.countryX, y: pt.countryY };
+  return { x: pt.x, y: pt.y };
+}
+function edgeScale(space) { return space === 'country' ? COUNTRY_KM_PER_UNIT : CITY_KM_PER_UNIT; }
+function edgeJitter(space) { return space === 'country' ? [7, 7] : [5, 5]; }
 
 function segDist(aId, bId) {
-  const a = pointById(aId), b = pointById(bId);
-  const poly = getEdgePolyline('rivnoe', aId, bId, a, b, 5, 5);
-  return polylineLengthUnits(poly) * 0.4;
+  const space = edgeSpace(aId, bId);
+  const a = edgeCoord(aId, space), b = edgeCoord(bId, space);
+  const [seg, off] = edgeJitter(space);
+  const poly = getEdgePolyline(space, aId, bId, a, b, seg, off);
+  return polylineLengthUnits(poly) * edgeScale(space);
 }
 
-// A waypoint is either a node id (string, looked up via pointById) or a plain
-// {x,y} coordinate — used for the courier's exact live position when a route
-// is redirected mid-trip, so the remaining distance is charged honestly
-// instead of snapping for free to the nearest graph node.
-function waypointCoord(wp) { return typeof wp === 'string' ? pointById(wp) : wp; }
+// A waypoint is either a node id (string) or a plain {x,y,space} coordinate —
+// the latter is used for the courier's exact live position when a route is
+// redirected mid-trip, so the remaining distance is charged honestly instead
+// of snapping for free to the nearest graph node.
+function waypointCoord(wp) { return typeof wp === 'string' ? WORLD_POINTS[wp] : wp; }
+function waypointSpace(wp) { return typeof wp === 'string' ? pointSpace(wp) : wp.space; }
 function waypointDist(wpA, wpB) {
   if (typeof wpA === 'string' && typeof wpB === 'string') return segDist(wpA, wpB);
-  const a = waypointCoord(wpA), b = waypointCoord(wpB);
-  return Math.hypot(a.x - b.x, a.y - b.y) * 0.4;
+  const space = typeof wpA !== 'string' ? wpA.space : wpB.space;
+  const a = typeof wpA === 'string' ? edgeCoord(wpA, space) : wpA;
+  const b = typeof wpB === 'string' ? edgeCoord(wpB, space) : wpB;
+  return Math.hypot(a.x - b.x, a.y - b.y) * edgeScale(space);
 }
 
 function buildGraph() {
   const g = {};
-  CITY_POINTS.forEach(p => { g[p.id] = []; });
-  ROAD_EDGES.forEach(([a, b]) => {
+  Object.keys(WORLD_POINTS).forEach(id => { g[id] = []; });
+  WORLD_EDGES.forEach(([a, b]) => {
     const d = segDist(a, b);
     g[a].push({ to: b, d });
     g[b].push({ to: a, d });
@@ -255,7 +433,7 @@ const GRAPH = buildGraph();
 function shortestPath(fromId, toId) {
   if (fromId === toId) return [fromId];
   const dist = {}, prev = {}, visited = new Set();
-  CITY_POINTS.forEach(p => { dist[p.id] = Infinity; });
+  Object.keys(WORLD_POINTS).forEach(id => { dist[id] = Infinity; });
   dist[fromId] = 0;
   while (true) {
     let u = null, best = Infinity;
@@ -283,31 +461,48 @@ function pathDistanceKm(path) {
   return total;
 }
 
+// Returns {x,y,space} — space tells the renderer which canvas (which city, or
+// the country map) this live position belongs to.
 function positionAlongPath(path, fracKm, totalKm) {
-  if (path.length === 1) { const p = waypointCoord(path[0]); return { x: p.x, y: p.y }; }
+  if (path.length === 1) {
+    const p = waypointCoord(path[0]);
+    return { x: p.x, y: p.y, space: waypointSpace(path[0]) };
+  }
   let remaining = clamp(fracKm, 0, totalKm);
   for (let i = 0; i < path.length - 1; i++) {
     const wpA = path[i], wpB = path[i + 1];
-    const bothNodes = typeof wpA === 'string' && typeof wpB === 'string';
-    let segLen, poly = null;
-    if (bothNodes) {
-      const a = pointById(wpA), b = pointById(wpB);
-      poly = getEdgePolyline('rivnoe', wpA, wpB, a, b, 5, 5);
-      segLen = polylineLengthUnits(poly) * 0.4;
+    const bothStr = typeof wpA === 'string' && typeof wpB === 'string';
+    let segLen, poly = null, space;
+    if (bothStr) {
+      space = edgeSpace(wpA, wpB);
+      const a = edgeCoord(wpA, space), b = edgeCoord(wpB, space);
+      const [seg, off] = edgeJitter(space);
+      poly = getEdgePolyline(space, wpA, wpB, a, b, seg, off);
+      segLen = polylineLengthUnits(poly) * edgeScale(space);
     } else {
+      space = waypointSpace(wpA) !== 'country' ? waypointSpace(wpA) : waypointSpace(wpB);
       segLen = waypointDist(wpA, wpB);
     }
     if (remaining <= segLen || i === path.length - 2) {
-      if (poly) return pointOnPolyline(poly, segLen === 0 ? 0 : remaining / segLen);
-      const a = waypointCoord(wpA), b = waypointCoord(wpB);
+      if (poly) { const pt = pointOnPolyline(poly, segLen === 0 ? 0 : remaining / segLen); return { x: pt.x, y: pt.y, space }; }
+      const a = typeof wpA === 'string' ? edgeCoord(wpA, space) : wpA;
+      const b = typeof wpB === 'string' ? edgeCoord(wpB, space) : wpB;
       const t = segLen === 0 ? 0 : clamp(remaining / segLen, 0, 1);
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, space };
     }
     remaining -= segLen;
   }
-  const last = waypointCoord(path[path.length - 1]);
-  return { x: last.x, y: last.y };
+  const lastId = path[path.length - 1];
+  const last = waypointCoord(lastId);
+  return { x: last.x, y: last.y, space: waypointSpace(lastId) };
 }
+
+function isNight() {
+  const minuteOfDay = (state.gameTime + DAY_START_OFFSET) % 1440;
+  return minuteOfDay >= NIGHT_START_MIN || minuteOfDay < NIGHT_END_MIN;
+}
+
+// ---------- state ----------
 
 let state = null;
 let jobIdSeq = 1;
@@ -317,7 +512,7 @@ let autosaveAccum = 0;
 let toasts = [];
 let uiSelectedPointId = null;
 let catchupBuffer = null;
-let mapView = 'city'; // 'city' | 'country'
+let mapView = 'city';
 let mapCityId = 'rivnoe';
 
 function newGameState() {
@@ -326,17 +521,18 @@ function newGameState() {
     gameTime: 0,
     lastRealTimestamp: Date.now(),
     player: {
-      positionId: 'home',
+      positionId: 'rivnoe:home',
       status: 'idle', // idle | moving | resting | eating
       activity: null,
       fatigue: 15,
       hunger: 15,
-      vehicle: { type: 'bike', speedKmh: 15, condition: 100, upgraded: false },
+      vehicle: { type: 'foot', condition: 100, upgraded: false, fuel: Infinity },
       restElapsed: 0,
       eatElapsed: 0,
       restPlan: null,
       eatPlan: null,
-      job: null, // { id, fromId, toId, distanceKm, payout, pickedUp }
+      jobs: [], // { id, fromId, toId, itemName, storage, weightKg, volumeL, urgencyKey, deadlineReal, payout, pickedUp }
+      equipment: {},
       warnedHunger: false,
       warnedFatigue: false,
     },
@@ -369,19 +565,88 @@ function formatTime(gameMinutes) {
   return `День ${day}, ${hh}:${mm}`;
 }
 
-const DELIVERY_POINT_IDS = CITY_POINTS.filter(p => p.type === 'delivery').map(p => p.id);
+// ---------- cargo & equipment ----------
+
+function vehicleSpec() { return VEHICLE_BY_ID[state.player.vehicle.type]; }
+
+function hasRequiredEquipment(storage) {
+  if (storage === 'normal') return true;
+  const spec = vehicleSpec();
+  if (spec.fridge && (storage === 'chilled' || storage === 'frozen')) return true;
+  const need = EQUIPMENT.find(e => e.unlocks.includes(storage));
+  if (!need) return true;
+  return !!state.player.equipment[need.id];
+}
+
+function equipmentLabelFor(storage) {
+  const spec = vehicleSpec();
+  if (spec.fridge && (storage === 'chilled' || storage === 'frozen')) return null;
+  const need = EQUIPMENT.find(e => e.unlocks.includes(storage));
+  return need ? need.name : null;
+}
+
+function cargoWeightKg() { return state.player.jobs.filter(j => j.pickedUp).reduce((s, j) => s + j.weightKg, 0); }
+function cargoVolumeL() { return state.player.jobs.filter(j => j.pickedUp).reduce((s, j) => s + j.volumeL, 0); }
+
+// ---------- jobs: generation, taking, pickup, delivery ----------
+
+function pickJobEndpoints() {
+  // Most jobs stay inside one city (walkable/bikeable); only a minority are
+  // genuine cross-country hauls that need a real vehicle.
+  if (Math.random() < 0.8 && CITIES_WITH_DELIVERY.length > 0) {
+    const city = Math.random() < 0.55 ? 'rivnoe' : pick(CITIES_WITH_DELIVERY);
+    const pts = DELIVERY_BY_CITY[city];
+    if (pts && pts.length >= 2) {
+      const fromId = pick(pts);
+      let toId = pick(pts), guard = 0;
+      while (toId === fromId && guard++ < 20) toId = pick(pts);
+      return { fromId, toId };
+    }
+  }
+  const fromId = pick(ALL_DELIVERY_POINT_IDS);
+  let toId = pick(ALL_DELIVERY_POINT_IDS), guard = 0;
+  while (pointSpace(toId) === pointSpace(fromId) && guard++ < 20) toId = pick(ALL_DELIVERY_POINT_IDS);
+  return { fromId, toId };
+}
 
 function generateJob() {
-  const fromId = pick(DELIVERY_POINT_IDS);
-  let toId = pick(DELIVERY_POINT_IDS);
-  while (toId === fromId) toId = pick(DELIVERY_POINT_IDS);
+  const { fromId, toId } = pickJobEndpoints();
+  const template = pick(ITEM_TEMPLATES);
+  const weightKg = Math.round(rand(template.weightKg[0], template.weightKg[1]) * 10) / 10;
+  const volumeL = Math.round(rand(template.volumeL[0], template.volumeL[1]));
+  const urgencyKey = pick(template.urgency);
+  const urgency = URGENCY_LEVELS[urgencyKey];
   const distanceKm = pathDistanceKm(shortestPath(fromId, toId));
-  const payout = Math.round(150 + distanceKm * 22 + rand(-20, 35));
-  return { id: jobIdSeq++, fromId, toId, distanceKm: Math.round(distanceKm * 10) / 10, payout };
+  const storageSurcharge = { normal: 0, chilled: 80, frozen: 150, fragile: 60, live_small: 120, live_large: 220, valuable: 100 }[template.storage] || 0;
+  const urgencySurcharge = { urgent: 250, standard: 60, none: 0 }[urgencyKey];
+  const weightSurcharge = Math.round(weightKg * 3);
+  const payout = Math.round(120 + distanceKm * 20 + storageSurcharge + urgencySurcharge + weightSurcharge + rand(-15, 25));
+  return {
+    id: jobIdSeq++, fromId, toId,
+    itemName: template.name, storage: template.storage, weightKg, volumeL,
+    urgencyKey, urgencyLabel: urgency.label,
+    deadlineReal: urgency.windowRealMs === Infinity ? null : Date.now() + urgency.windowRealMs,
+    distanceKm: Math.round(distanceKm * 10) / 10,
+    payout, pickedUp: false,
+  };
 }
 
 function maintainJobPool() {
-  while (state.availableJobs.length < 4) state.availableJobs.push(generateJob());
+  while (state.availableJobs.length < 6) state.availableJobs.push(generateJob());
+}
+
+function checkJobDeadlines() {
+  const now = Date.now();
+  const before = state.availableJobs.length;
+  state.availableJobs = state.availableJobs.filter(j => !(j.deadlineReal && now > j.deadlineReal));
+  if (state.availableJobs.length < before) log('Один из срочных заказов просрочен и снят с биржи', { silent: true });
+
+  const heldBefore = state.player.jobs.length;
+  state.player.jobs = state.player.jobs.filter(j => {
+    if (!j.pickedUp && j.deadlineReal && now > j.deadlineReal) return false;
+    return true;
+  });
+  if (state.player.jobs.length < heldBefore) log('Не успел забрать заказ вовремя — заказ отменён', { silent: true });
 }
 
 function pushPendingAction(item) {
@@ -390,6 +655,57 @@ function pushPendingAction(item) {
   return item;
 }
 
+function takeJob(jobId) {
+  const pendingCount = state.player.jobs.filter(j => !j.pickedUp).length;
+  if (pendingCount >= MAX_PENDING_JOBS) { toast(`Нельзя резервировать больше ${MAX_PENDING_JOBS} заказов одновременно`); return; }
+  const idx = state.availableJobs.findIndex(j => j.id === jobId);
+  if (idx === -1) return;
+  const job = state.availableJobs.splice(idx, 1)[0];
+  state.player.jobs.push(job);
+  log(`Взял заказ: ${job.itemName} (${pointById(job.fromId).name} → ${pointById(job.toId).name}), ${job.payout} ₽`);
+}
+
+function pickUpJob(jobId) {
+  const p = state.player;
+  const job = p.jobs.find(j => j.id === jobId && !j.pickedUp);
+  if (!job) return;
+  if (p.status !== 'idle' || p.positionId !== job.fromId) return;
+  if (!hasRequiredEquipment(job.storage)) { toast(`Нужно снаряжение: ${equipmentLabelFor(job.storage)}`); return; }
+  const spec = vehicleSpec();
+  if (cargoWeightKg() + job.weightKg > spec.kg || cargoVolumeL() + job.volumeL > spec.l) {
+    toast('Не влезает — превышен вес или объём груза для текущего транспорта');
+    return;
+  }
+  job.pickedUp = true;
+  log(`Забрал заказ: ${job.itemName} → ${pointById(job.toId).name}`);
+}
+
+function deliverJob(jobId) {
+  const p = state.player;
+  const job = p.jobs.find(j => j.id === jobId && j.pickedUp);
+  if (!job) return;
+  if (p.status !== 'idle' || p.positionId !== job.toId) return;
+  state.money += job.payout;
+  state.stats.jobsCompleted++;
+  state.stats.totalEarned += job.payout;
+  p.jobs = p.jobs.filter(j => j.id !== jobId);
+  log(`Доставил «${job.itemName}», получил ${job.payout} ₽`);
+}
+
+// ---------- rest / eat (available at any point; sleeping needs an actual home) ----------
+
+const EAT_OPTIONS = [
+  { id: 'snack', label: 'Перекусить', minutes: 15, hungerRelief: 45 },
+  { id: 'meal', label: 'Плотно поесть', minutes: 35, hungerRelief: 100 },
+];
+const EAT_PRICE_CAFE = { snack: 150, meal: 350 };
+const SLEEP_OPTIONS = [
+  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30 },
+  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, fatigueRelief: 70 },
+  { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, fatigueRelief: 100 },
+];
+const IDLE_REST_OPTION = { id: 'breathe', label: 'Просто отдохнуть, не ложась', minutes: 20, fatigueRelief: 10 };
+
 function cancelCurrentAction() {
   const p = state.player;
   if (p.status === 'resting' || p.status === 'eating') {
@@ -397,14 +713,72 @@ function cancelCurrentAction() {
   }
 }
 
-// Which real-world edge the courier is currently on, and how far along it —
-// used to cost a mid-trip redirect honestly instead of snapping for free.
+function startEating(optionId) {
+  const p = state.player;
+  if (p.status !== 'idle') return;
+  const point = pointById(p.positionId);
+  const isHome = point.type === 'home';
+  const canEatHere = isHome || point.type === 'cafe' || point.type === 'waystop';
+  if (!canEatHere) return;
+  const opt = EAT_OPTIONS.find(o => o.id === optionId);
+  const cost = isHome ? 0 : EAT_PRICE_CAFE[optionId];
+  if (state.money < cost) { toast('Не хватает денег'); return; }
+  state.money -= cost;
+  p.status = 'eating';
+  p.eatElapsed = 0;
+  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label };
+  log(isHome ? `Ест дома (${opt.label})` : `Ест: ${opt.label} (${cost} ₽)`, { silent: true });
+}
+
+function startSleeping(optionId) {
+  const p = state.player;
+  if (p.status !== 'idle' || pointById(p.positionId).type !== 'home') return;
+  const opt = SLEEP_OPTIONS.find(o => o.id === optionId);
+  p.status = 'resting';
+  p.restElapsed = 0;
+  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, label: opt.label };
+  log(`Лёг спать дома: ${opt.label}`, { silent: true });
+}
+
+function startIdleRest() {
+  const p = state.player;
+  if (p.status !== 'idle') return;
+  p.status = 'resting';
+  p.restElapsed = 0;
+  p.restPlan = { totalMinutes: IDLE_REST_OPTION.minutes, fatigueRelief: IDLE_REST_OPTION.fatigueRelief, label: IDLE_REST_OPTION.label };
+  log('Немного отдохнул', { silent: true });
+}
+
+function interruptRest() {
+  const p = state.player;
+  if (p.status === 'resting' || p.status === 'eating') { cancelCurrentAction(); log('Прервал отдых', { silent: true }); }
+}
+
+// ---------- refuelling ----------
+
+function refuel() {
+  const p = state.player;
+  const spec = vehicleSpec();
+  if (spec.fuel === 'legs') return;
+  const point = pointById(p.positionId);
+  if (point.type !== 'gas' && point.type !== 'waystop') return;
+  if (p.status !== 'idle') return;
+  const missing = spec.tank - p.vehicle.fuel;
+  if (missing <= 0.01) return;
+  const cost = Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
+  if (state.money < cost) { toast('Не хватает денег на заправку'); return; }
+  state.money -= cost;
+  p.vehicle.fuel = spec.tank;
+  log(`Заправился (${cost} ₽)`, { silent: true });
+}
+
+// ---------- travel ----------
+
 function currentEdgeState() {
   const p = state.player;
   const a = p.activity;
   if (!a) return null;
-  const progress = a.totalMinutes > 0 ? clamp(a.elapsedMinutes / a.totalMinutes, 0, 1) : 1;
-  let remaining = progress * a.totalKm;
+  let remaining = clamp(a.traveledKm, 0, a.totalKm);
   for (let i = 0; i < a.path.length - 1; i++) {
     const wpA = a.path[i], wpB = a.path[i + 1];
     const segLen = waypointDist(wpA, wpB);
@@ -421,22 +795,34 @@ function currentEdgeState() {
   return null;
 }
 
+function tripFeasibility(totalKm) {
+  const spec = vehicleSpec();
+  if (totalKm > spec.trip) return { ok: false, reason: `Слишком далеко для «${spec.name}» за один раз (макс. ${spec.trip} км без остановки). Доберись до заправки/стоянки по пути и продолжи оттуда.` };
+  if (spec.fuel !== 'legs' && totalKm > state.player.vehicle.fuel) {
+    return { ok: false, reason: `Не хватит топлива/заряда (осталось ${Math.round(state.player.vehicle.fuel)} км хода). Заправься или выбери путь через заправку.` };
+  }
+  return { ok: true };
+}
+
 function beginTravelFromWaypoints(path) {
   const p = state.player;
   const targetId = path[path.length - 1];
   const totalKm = pathDistanceKm(path);
   if (totalKm <= 0.0001) { onArrive(targetId); return; }
+  const feas = tripFeasibility(totalKm);
+  if (!feas.ok) { toast(feas.reason); return; }
+  const spec = vehicleSpec();
   p.status = 'moving';
   p.activity = {
     path, targetId,
-    totalMinutes: (totalKm / p.vehicle.speedKmh) * 60,
-    elapsedMinutes: 0,
+    traveledKm: 0,
     totalKm,
     breakdownAt: Math.random() < 0.18 ? rand(0.25, 0.85) : null,
     breakdownTriggered: false,
     problemPending: false,
     problem: null,
   };
+  syncViewToPlayer();
 }
 
 function startTravel(targetId) {
@@ -444,12 +830,10 @@ function startTravel(targetId) {
   if (p.status === 'moving' && p.activity) {
     if (p.activity.problemPending) { toast('Сначала реши проблему в пути'); return; }
     const edge = currentEdgeState();
-    const curFrac = p.activity.totalMinutes > 0 ? clamp(p.activity.elapsedMinutes / p.activity.totalMinutes, 0, 1) : 1;
-    const currentPoint = positionAlongPath(p.activity.path, curFrac * p.activity.totalKm, p.activity.totalKm);
+    const currentPointRaw = positionAlongPath(p.activity.path, p.activity.traveledKm, p.activity.totalKm);
+    const currentPoint = { x: currentPointRaw.x, y: currentPointRaw.y, space: currentPointRaw.space };
     if (!edge) return;
     if (edge.aId === null) {
-      // Still on the straight-line first leg of an earlier redirect: the only
-      // honest option is to keep going to the upcoming real node, then onward.
       const tail = shortestPath(edge.bId, targetId);
       beginTravelFromWaypoints([currentPoint, edge.bId, ...tail.slice(1)]);
       return;
@@ -474,89 +858,32 @@ function onArrive(targetId) {
   p.positionId = targetId;
   p.status = 'idle';
   p.activity = null;
+  syncViewToPlayer();
 }
 
-function pickUpJob() {
+function syncViewToPlayer() {
   const p = state.player;
-  if (!p.job || p.job.pickedUp) return;
-  if (p.status !== 'idle' || p.positionId !== p.job.fromId) return;
-  p.job.pickedUp = true;
-  log(`Забрал заказ: ${pointById(p.job.fromId).name} → ${pointById(p.job.toId).name}`);
-}
-
-function deliverJob() {
-  const p = state.player;
-  if (!p.job || !p.job.pickedUp) return;
-  if (p.status !== 'idle' || p.positionId !== p.job.toId) return;
-  state.money += p.job.payout;
-  state.stats.jobsCompleted++;
-  state.stats.totalEarned += p.job.payout;
-  log(`Доставил заказ, получил ${p.job.payout} ₽`);
-  p.job = null;
-}
-
-function takeJob(jobId) {
-  if (state.player.job) return;
-  const idx = state.availableJobs.findIndex(j => j.id === jobId);
-  if (idx === -1) return;
-  const job = state.availableJobs.splice(idx, 1)[0];
-  job.pickedUp = false;
-  state.player.job = job;
-  log(`Взял заказ: ${pointById(job.fromId).name} → ${pointById(job.toId).name}, ${job.payout} ₽`);
-}
-
-function startEating(optionId) {
-  const p = state.player;
-  if (p.status !== 'idle') return;
-  const point = pointById(p.positionId);
-  const atHome = p.positionId === 'home';
-  const atCafe = point && point.type === 'cafe';
-  if (!atHome && !atCafe) return;
-  const opt = EAT_OPTIONS.find(o => o.id === optionId);
-  const cost = atHome ? 0 : EAT_PRICE_CAFE[optionId];
-  if (state.money < cost) { toast('Не хватает денег'); return; }
-  state.money -= cost;
-  p.status = 'eating';
-  p.eatElapsed = 0;
-  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label };
-  log(atHome ? `Ест дома (${opt.label})` : `Ест в кафе: ${opt.label} (${cost} ₽)`, { silent: true });
-}
-
-function startSleeping(optionId) {
-  const p = state.player;
-  if (p.status !== 'idle' || p.positionId !== 'home') return;
-  const opt = SLEEP_OPTIONS.find(o => o.id === optionId);
-  p.status = 'resting';
-  p.restElapsed = 0;
-  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, label: opt.label };
-  log(`Лёг спать дома: ${opt.label}`, { silent: true });
-}
-
-function startIdleHome() {
-  const p = state.player;
-  if (p.status !== 'idle' || p.positionId !== 'home') return;
-  p.status = 'resting';
-  p.restElapsed = 0;
-  p.restPlan = { totalMinutes: IDLE_HOME_OPTION.minutes, fatigueRelief: IDLE_HOME_OPTION.fatigueRelief, label: IDLE_HOME_OPTION.label };
-  log('Немного отдохнул дома, не ложась', { silent: true });
-}
-
-function interruptRest() {
-  const p = state.player;
-  if (p.status === 'resting' || p.status === 'eating') {
-    cancelCurrentAction();
-    log('Прервал отдых', { silent: true });
+  let space;
+  if (p.status === 'moving' && p.activity) {
+    const pos = positionAlongPath(p.activity.path, p.activity.traveledKm, p.activity.totalKm);
+    space = pos.space;
+  } else {
+    space = pointSpace(p.positionId);
   }
+  if (space === 'country') { mapView = 'country'; }
+  else { mapView = 'city'; mapCityId = space; }
 }
 
 function triggerBreakdown(activity) {
   const p = state.player;
+  const spec = vehicleSpec();
   const conditionFactor = (100 - p.vehicle.condition) / 100;
   const severeChance = 0.15 + conditionFactor * 0.5;
-  const pool = Math.random() < severeChance
-    ? BREAKDOWN_TYPES.filter(b => b.severity === 'severe')
-    : BREAKDOWN_TYPES.filter(b => b.severity === 'minor');
-  const type = pick(pool);
+  const pool = breakdownPoolFor(spec);
+  const candidates = Math.random() < severeChance
+    ? pool.filter(b => b.severity === 'severe')
+    : pool.filter(b => b.severity === 'minor');
+  const type = pick(candidates);
   activity.problemPending = true;
   activity.problem = { kind: 'breakdown', typeId: type.id };
   log(`Поломка в пути: ${type.label}`, { silent: true });
@@ -587,27 +914,25 @@ function resolvePendingAction(actionId, choice) {
   const action = state.pendingActions[idx];
   const activity = state.player.activity;
   if (!activity || !activity.problemPending) { state.pendingActions.splice(idx, 1); return; }
+  const spec = vehicleSpec();
 
   if (action.kind === 'breakdown') {
-    const type = BREAKDOWN_TYPES.find(t => t.id === action.typeId);
+    const type = breakdownPoolFor(spec).find(t => t.id === action.typeId);
     if (choice === 'selfFix') {
       state.money -= type.selfFixCost;
       state.player.vehicle.condition = clamp(state.player.vehicle.condition + 30, 0, 100);
-      activity.elapsedMinutes += type.selfFixMinutes;
       log(`Починил на месте: ${type.label} (${type.selfFixCost} ₽)`);
     } else if (choice === 'ignore') {
-      activity.totalMinutes *= type.ignorePenalty;
+      activity.totalKm *= type.ignorePenalty;
       log(`Поехал дальше, несмотря на «${type.label}»`);
     } else if (choice === 'tow') {
       state.money -= type.towCost;
-      activity.totalMinutes += type.towMinutes;
       state.player.vehicle.condition = 100;
       log(`Вызвал эвакуатор, починили в мастерской за ${type.towCost} ₽`);
     }
   } else if (action.kind === 'exhausted') {
     // Roadside rest only relieves fatigue a little — it does NOT feed the courier.
     state.player.fatigue = 40;
-    activity.totalMinutes += 60;
     log('Отдохнул на обочине, силы немного вернулись, но есть по-прежнему хочется');
   }
 
@@ -617,18 +942,20 @@ function resolvePendingAction(actionId, choice) {
 }
 
 function buyVehicle(vehicleId) {
-  const v = VEHICLES.find(x => x.id === vehicleId);
-  if (!v || state.player.status !== 'idle' || state.player.positionId !== 'shop') return;
-  if (state.player.vehicle.type === vehicleId) return;
+  const v = VEHICLE_BY_ID[vehicleId];
+  const p = state.player;
+  if (!v || p.status !== 'idle' || pointById(p.positionId).type !== 'shop') return;
+  if (p.vehicle.type === vehicleId) return;
   if (state.money < v.price) return;
+  if (cargoWeightKg() > v.kg || cargoVolumeL() > v.l) { toast('Текущий груз не влезет в этот транспорт'); return; }
   state.money -= v.price;
-  state.player.vehicle = { type: v.id, speedKmh: v.speedKmh, condition: 100, upgraded: false };
-  log(`Купил технику: ${v.name}`);
+  p.vehicle = { type: v.id, condition: 100, upgraded: false, fuel: v.tank };
+  log(`Купил транспорт: ${v.name}`);
 }
 
 function workshopRepair() {
   const p = state.player;
-  if (p.status !== 'idle' || p.positionId !== 'workshop') return;
+  if (p.status !== 'idle' || pointById(p.positionId).type !== 'workshop') return;
   if (state.money < WORKSHOP_REPAIR_COST) return;
   state.money -= WORKSHOP_REPAIR_COST;
   p.vehicle.condition = 100;
@@ -637,26 +964,45 @@ function workshopRepair() {
 
 function workshopUpgrade() {
   const p = state.player;
-  if (p.status !== 'idle' || p.positionId !== 'workshop') return;
+  if (p.status !== 'idle' || pointById(p.positionId).type !== 'workshop') return;
   if (p.vehicle.upgraded || state.money < UPGRADE_COST) return;
   state.money -= UPGRADE_COST;
   p.vehicle.upgraded = true;
   log('Укрепил подвеску — поломки реже');
 }
 
+function buyEquipment(equipId) {
+  const eq = EQUIPMENT.find(e => e.id === equipId);
+  const p = state.player;
+  if (!eq || p.status !== 'idle' || pointById(p.positionId).type !== 'shop') return;
+  if (p.equipment[equipId]) return;
+  if (state.money < eq.price) return;
+  state.money -= eq.price;
+  p.equipment[equipId] = true;
+  log(`Купил снаряжение: ${eq.name}`);
+}
+
+// ---------- simulation ----------
+
 function simulateTick(dt, summary) {
   const p = state.player;
+  checkJobDeadlines();
   if (p.status === 'moving') {
     const a = p.activity;
     if (a.problemPending) {
       p.hunger = clamp(p.hunger + HUNGER_RATE_STUCK * dt, 0, 100);
     } else {
-      a.elapsedMinutes += dt;
-      p.fatigue = clamp(p.fatigue + FATIGUE_RATE_MOVING * dt, 0, 100);
+      const spec = vehicleSpec();
+      const nightMult = isNight() ? NIGHT_SPEED_MULT : 1;
+      const effSpeed = spec.speed * nightMult;
+      const kmThisTick = effSpeed * (dt / 60);
+      a.traveledKm = clamp(a.traveledKm + kmThisTick, 0, a.totalKm);
+      p.fatigue = clamp(p.fatigue + spec.fat * kmThisTick, 0, 100);
       p.hunger = clamp(p.hunger + HUNGER_RATE_MOVING * dt, 0, 100);
-      p.vehicle.condition = clamp(p.vehicle.condition - (dt / a.totalMinutes) * a.totalKm * WEAR_PER_KM, 0, 100);
+      p.vehicle.condition = clamp(p.vehicle.condition - kmThisTick * WEAR_PER_KM, 0, 100);
+      if (spec.fuel !== 'legs') p.vehicle.fuel = clamp(p.vehicle.fuel - kmThisTick, 0, spec.tank);
 
-      const progress = a.totalMinutes > 0 ? a.elapsedMinutes / a.totalMinutes : 1;
+      const progress = a.totalKm > 0 ? a.traveledKm / a.totalKm : 1;
       const breakdownChanceMod = p.vehicle.upgraded ? 0.5 : 1;
       if (!a.breakdownTriggered && a.breakdownAt !== null && progress >= a.breakdownAt) {
         a.breakdownTriggered = true;
@@ -667,7 +1013,7 @@ function simulateTick(dt, summary) {
       } else if (p.fatigue >= 100 || p.hunger >= 100) {
         triggerExhausted(a);
         if (summary) summary.incidents++;
-      } else if (a.elapsedMinutes >= a.totalMinutes) {
+      } else if (a.traveledKm >= a.totalKm) {
         onArrive(a.targetId);
       }
     }
@@ -697,11 +1043,12 @@ function simulateTick(dt, summary) {
 
   if (Math.random() < dt * 0.01) maintainJobPool();
   state.gameTime += dt;
-
-  if (summary && state.money !== summary.lastMoney) {
-    summary.lastMoney = state.money;
-  }
 }
+
+const HUNGER_RATE_MOVING = 0.18;
+const HUNGER_RATE_IDLE = 0.12;
+const HUNGER_RATE_RESTING = 0.08;
+const HUNGER_RATE_STUCK = 0.06;
 
 function runOfflineCatchup() {
   const now = Date.now();
@@ -799,21 +1146,78 @@ function drawDecor(decor, toPx, w) {
 
 function drawRoads(mapKey, points, edges, toPx) {
   const byId = id => points.find(p => p.id === id);
+  const [seg, off] = edgeJitter(mapKey === 'country' ? 'country' : 'city');
   ctx.strokeStyle = '#333c4a';
   ctx.lineWidth = 4;
   ctx.lineCap = 'round';
   edges.forEach(([aId, bId]) => {
     const a = byId(aId), b = byId(bId);
-    const poly = getEdgePolyline(mapKey, aId, bId, a, b, 5, 5);
+    const poly = getEdgePolyline(mapKey, aId, bId, a, b, seg, off);
     strokePolyline(poly, toPx);
   });
   ctx.strokeStyle = '#4a5568';
   ctx.lineWidth = 1;
   edges.forEach(([aId, bId]) => {
     const a = byId(aId), b = byId(bId);
-    const poly = getEdgePolyline(mapKey, aId, bId, a, b, 5, 5);
+    const poly = getEdgePolyline(mapKey, aId, bId, a, b, seg, off);
     strokePolyline(poly, toPx);
   });
+}
+
+// Animated vehicle marker: rotates to face the travel heading, and draws
+// rolling wheels (a rotating spoke) instead of a static glyph.
+function drawVehicleMarker(cx, cy, angle, drawStyle, traveledKm, isProblem) {
+  const bodyColor = isProblem ? '#d9534f' : '#7fd17f';
+  const wheelAngle = (traveledKm * 14) % (Math.PI * 2);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+
+  function wheel(wx, wy, r) {
+    ctx.beginPath(); ctx.arc(wx, wy, r, 0, Math.PI * 2);
+    ctx.fillStyle = '#20242c'; ctx.fill();
+    ctx.strokeStyle = '#aab2bd'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(wx - Math.cos(wheelAngle) * r, wy - Math.sin(wheelAngle) * r);
+    ctx.lineTo(wx + Math.cos(wheelAngle) * r, wy + Math.sin(wheelAngle) * r);
+    ctx.strokeStyle = '#e5e9ef'; ctx.lineWidth = 1.4; ctx.stroke();
+  }
+
+  if (drawStyle === 'foot') {
+    ctx.fillStyle = bodyColor;
+    ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill();
+    const stride = Math.sin(traveledKm * 20) * 3;
+    ctx.strokeStyle = bodyColor; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-2, 3); ctx.lineTo(-2 - stride, 8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(2, 3); ctx.lineTo(2 + stride, 8); ctx.stroke();
+  } else if (drawStyle === 'twowheel') {
+    wheel(-6, 0, 3.4);
+    wheel(6, 0, 3.4);
+    ctx.strokeStyle = bodyColor; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-6, 0); ctx.lineTo(6, 0); ctx.stroke();
+    ctx.fillStyle = bodyColor; ctx.beginPath(); ctx.arc(3, -3, 2.2, 0, Math.PI * 2); ctx.fill();
+  } else if (drawStyle === 'car') {
+    wheel(-6, -4.5, 2.6); wheel(-6, 4.5, 2.6);
+    wheel(6, -4.5, 2.6); wheel(6, 4.5, 2.6);
+    ctx.fillStyle = bodyColor;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-9, -5.5, 18, 11, 3) : ctx.rect(-9, -5.5, 18, 11);
+    ctx.fill();
+  } else if (drawStyle === 'truck') {
+    wheel(-8, -5.5, 3); wheel(-8, 5.5, 3);
+    wheel(2, -5.5, 3); wheel(2, 5.5, 3);
+    ctx.fillStyle = bodyColor;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-12, -6.5, 24, 13, 3) : ctx.rect(-12, -6.5, 24, 13);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function headingAngle(path, traveledKm, totalKm, space) {
+  const ahead = clamp(traveledKm + Math.max(0.05, totalKm * 0.01), 0, totalKm);
+  const behind = clamp(traveledKm - Math.max(0.05, totalKm * 0.01), 0, totalKm);
+  const p1 = positionAlongPath(path, behind, totalKm);
+  const p2 = positionAlongPath(path, ahead, totalKm);
+  return Math.atan2(p2.y - p1.y, p2.x - p1.x);
 }
 
 function drawCityMap() {
@@ -821,17 +1225,18 @@ function drawCityMap() {
   const w = rect.width, h = rect.height;
   ctx.clearRect(0, 0, w, h);
   const toPx = (x, y) => [w * (x / 100), h * (y / 100)];
-  const layout = getCityLayout(mapCityId);
-  const isHome = mapCityId === 'rivnoe';
+  const points = Object.values(WORLD_POINTS).filter(p => pointSpace(p.id) === mapCityId);
+  const edges = WORLD_EDGES.filter(([a, b]) => pointSpace(a) === mapCityId && pointSpace(b) === mapCityId);
 
   drawDecor(getMapDecor('city:' + mapCityId), toPx, w);
-  drawRoads(mapCityId, layout.points, layout.edges, toPx);
+  drawRoads(mapCityId, points, edges, toPx);
 
   lastPointPixels = {};
-  layout.points.forEach(pnt => {
+  points.forEach(pnt => {
     const [x, y] = toPx(pnt.x, pnt.y);
     lastPointPixels[pnt.id] = { x, y };
-    const style = POINT_STYLES[pnt.type];
+    const style = POINT_STYLES[pnt.type] || POINT_STYLES.delivery;
+    if (pnt.type === 'gate') return; // gates are an implementation detail, not shown
     ctx.fillStyle = style.color;
     ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill();
     ctx.font = '13px system-ui';
@@ -844,25 +1249,21 @@ function drawCityMap() {
     ctx.fillText(pnt.name, x + 14, y + 3);
   });
 
-  if (!isHome) return;
-
   const p = state.player;
-  let cx, cy;
+  const curSpace = p.status === 'moving' && p.activity ? positionAlongPath(p.activity.path, p.activity.traveledKm, p.activity.totalKm).space : pointSpace(p.positionId);
+  if (curSpace !== mapCityId) return;
+
+  let cx, cy, angle = 0;
   if (p.status === 'moving' && p.activity) {
-    const a = p.activity;
-    const fracKm = a.totalMinutes > 0 ? (a.elapsedMinutes / a.totalMinutes) * a.totalKm : a.totalKm;
-    const pos = positionAlongPath(a.path, fracKm, a.totalKm);
+    const pos = positionAlongPath(p.activity.path, p.activity.traveledKm, p.activity.totalKm);
     [cx, cy] = toPx(pos.x, pos.y);
+    angle = headingAngle(p.activity.path, p.activity.traveledKm, p.activity.totalKm, pos.space);
   } else {
     const cur = pointById(p.positionId);
     [cx, cy] = toPx(cur.x, cur.y);
   }
-  ctx.fillStyle = p.status === 'moving' && p.activity && p.activity.problemPending ? '#d9534f' : '#7fd17f';
-  ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
-  ctx.font = '11px system-ui';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('🚴', cx, cy);
-  ctx.textAlign = 'left';
+  const traveled = p.activity ? p.activity.traveledKm : 0;
+  drawVehicleMarker(cx, cy, angle, vehicleSpec().draw, traveled, p.status === 'moving' && p.activity && p.activity.problemPending);
 }
 
 function drawCountryMap() {
@@ -877,23 +1278,33 @@ function drawCountryMap() {
   ctx.lineWidth = 5;
   ctx.lineCap = 'round';
   COUNTRY_ROAD_EDGES.forEach(([aId, bId]) => {
-    const a = cityById(aId), b = cityById(bId);
+    const a = cityMeta(aId), b = cityMeta(bId);
     const poly = getEdgePolyline('country', aId, bId, a, b, 7, 7);
     strokePolyline(poly, toPx);
   });
   ctx.strokeStyle = '#4a5568';
   ctx.lineWidth = 1.5;
   COUNTRY_ROAD_EDGES.forEach(([aId, bId]) => {
-    const a = cityById(aId), b = cityById(bId);
+    const a = cityMeta(aId), b = cityMeta(bId);
     const poly = getEdgePolyline('country', aId, bId, a, b, 7, 7);
     strokePolyline(poly, toPx);
   });
 
   lastCountryPixels = {};
+  Object.values(WORLD_POINTS).filter(p => p.type === 'waystop').forEach(stop => {
+    const [x, y] = toPx(stop.x, stop.y);
+    lastCountryPixels[stop.id] = { x, y };
+    ctx.fillStyle = '#4aa17a';
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('⛽', x, y);
+    ctx.textAlign = 'left';
+  });
+
   COUNTRY_CITIES.forEach(c => {
     const [x, y] = toPx(c.x, c.y);
     lastCountryPixels[c.id] = { x, y };
-    ctx.fillStyle = c.playable ? '#7fd17f' : '#e2a63b';
+    ctx.fillStyle = '#7fd17f';
     ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.fill();
     ctx.font = '15px system-ui';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -903,6 +1314,21 @@ function drawCountryMap() {
     ctx.fillText(c.name, x, y + 22);
     ctx.textAlign = 'left';
   });
+
+  const p = state.player;
+  const curPos = p.status === 'moving' && p.activity ? positionAlongPath(p.activity.path, p.activity.traveledKm, p.activity.totalKm) : { space: pointSpace(p.positionId) };
+  if (curPos.space !== 'country') return;
+  let cx, cy, angle = 0;
+  if (p.status === 'moving' && p.activity) {
+    [cx, cy] = toPx(curPos.x, curPos.y);
+    angle = headingAngle(p.activity.path, p.activity.traveledKm, p.activity.totalKm, curPos.space);
+  } else {
+    const cur = pointById(p.positionId);
+    const coord = edgeCoord(p.positionId, 'country');
+    [cx, cy] = toPx(coord.x, coord.y);
+  }
+  const traveled = p.activity ? p.activity.traveledKm : 0;
+  drawVehicleMarker(cx, cy, angle, vehicleSpec().draw, traveled, p.status === 'moving' && p.activity && p.activity.problemPending);
 }
 
 function drawMap() {
@@ -930,18 +1356,21 @@ canvas.addEventListener('click', (e) => {
   const clickX = e.clientX - rect.left, clickY = e.clientY - rect.top;
 
   if (mapView === 'country') {
-    for (const c of COUNTRY_CITIES) {
-      const pos = lastCountryPixels[c.id];
-      if (pos && Math.hypot(pos.x - clickX, pos.y - clickY) < 20) {
-        showCityView(c.id);
-        renderAll();
+    for (const id in lastCountryPixels) {
+      const pos = lastCountryPixels[id];
+      const isCity = !!cityMeta(id);
+      const radius = isCity ? 20 : 14;
+      if (Math.hypot(pos.x - clickX, pos.y - clickY) < radius) {
+        if (isCity) { showCityView(id); renderAll(); return; }
+        uiSelectedPointId = id;
+        lastPointPanelSignature = null;
+        renderPointPanel();
         return;
       }
     }
     return;
   }
 
-  if (mapCityId !== 'rivnoe') return; // other cities are look-only for now
   let found = null;
   for (const id in lastPointPixels) {
     const pos = lastPointPixels[id];
@@ -988,21 +1417,31 @@ canvas.addEventListener('wheel', (e) => {
 
 function renderMapToggleButton() {
   const btn = el('btn-map-toggle');
-  if (mapView === 'country') btn.textContent = '🏙 В город';
-  else btn.textContent = '🗺 Карта страны';
+  btn.textContent = mapView === 'country' ? '🏙 В город' : '🗺 Карта страны';
+}
+
+function formatKm(km) { return km < 10 ? km.toFixed(1) : Math.round(km); }
+function formatDeadline(ms) {
+  if (ms === null) return '∞ без срока';
+  const remaining = ms - Date.now();
+  if (remaining <= 0) return 'просрочен';
+  const totalMin = Math.floor(remaining / 60000);
+  if (totalMin < 60) return `${totalMin} мин`;
+  const h = Math.floor(totalMin / 60), m = totalMin % 60;
+  return `${h} ч ${m} мин`;
 }
 
 let lastPointPanelSignature = null;
 function renderPointPanel() {
   const panel = el('point-panel');
-  const visible = mapView === 'city' && mapCityId === 'rivnoe' && uiSelectedPointId && state;
-  const signature = visible ? `${uiSelectedPointId}|${state.player.positionId}|${state.player.status}` : 'hidden';
+  const visible = !!uiSelectedPointId && state;
+  const point = visible ? pointById(uiSelectedPointId) : null;
+  const p = state ? state.player : null;
+  const signature = visible ? `${uiSelectedPointId}|${p.positionId}|${p.status}|${p.jobs.map(j => j.id + ':' + j.pickedUp).join(',')}` : 'hidden';
   if (signature === lastPointPanelSignature) return;
   lastPointPanelSignature = signature;
 
-  if (!visible) { panel.classList.add('hidden'); return; }
-  const point = pointById(uiSelectedPointId);
-  const p = state.player;
+  if (!visible || !point || point.type === 'gate') { panel.classList.add('hidden'); return; }
   const here = p.status !== 'moving' && p.positionId === uiSelectedPointId;
   panel.classList.remove('hidden');
   panel.innerHTML = '';
@@ -1034,67 +1473,94 @@ function renderPointPanel() {
     return;
   }
 
-  if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop()); return; }
-  if (point.type === 'workshop') { addBtn('Открыть мастерскую', () => openWorkshop()); return; }
+  // jobs to pick up / deliver right here
+  p.jobs.filter(j => !j.pickedUp && j.fromId === uiSelectedPointId).forEach(j => {
+    addBtn(`📦 Забрать «${j.itemName}»`, () => { pickUpJob(j.id); renderAll(); });
+  });
+  p.jobs.filter(j => j.pickedUp && j.toId === uiSelectedPointId).forEach(j => {
+    addBtn(`✅ Сдать «${j.itemName}»`, () => { deliverJob(j.id); renderAll(); });
+  });
 
-  if (point.type === 'cafe') {
+  if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop()); }
+  if (point.type === 'workshop') { addBtn('Открыть мастерскую', () => openWorkshop()); }
+
+  if (point.type === 'cafe' || point.type === 'waystop') {
     EAT_OPTIONS.forEach(opt => {
       const cost = EAT_PRICE_CAFE[opt.id];
       addBtn(`${opt.label} — ${cost} ₽`, () => { startEating(opt.id); renderAll(); }, state.money < cost);
     });
-    return;
   }
-
   if (point.type === 'home') {
     EAT_OPTIONS.forEach(opt => addBtn(`${opt.label} (бесплатно)`, () => { startEating(opt.id); renderAll(); }));
     SLEEP_OPTIONS.forEach(opt => addBtn(opt.label, () => { startSleeping(opt.id); renderAll(); }));
-    addBtn(IDLE_HOME_OPTION.label, () => { startIdleHome(); renderAll(); });
+  }
+  if (point.type === 'gas' || point.type === 'waystop') {
+    const spec = vehicleSpec();
+    if (spec.fuel !== 'legs') {
+      const missing = spec.tank - p.vehicle.fuel;
+      const cost = Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
+      addBtn(missing <= 0.01 ? 'Бак полон' : `⛽ Заправиться — ${cost} ₽`, () => { refuel(); renderAll(); }, missing <= 0.01 || state.money < cost);
+    }
+  }
+  if (point.type !== 'home') {
+    addBtn(IDLE_REST_OPTION.label, () => { startIdleRest(); renderAll(); });
   }
 }
 
-let lastJobPanelSignature = null;
-function renderCurrentJobPanel() {
-  const box = el('current-job-panel');
+let lastCargoSignature = null;
+function renderCargoPanel() {
+  const box = el('cargo-panel');
   const p = state.player;
-  const job = p.job;
-  const signature = job ? `${job.id}|${job.pickedUp}|${p.status}|${p.positionId}` : 'hidden';
-  if (signature === lastJobPanelSignature) return;
-  lastJobPanelSignature = signature;
+  const signature = p.jobs.map(j => `${j.id}:${j.pickedUp}`).join(',') + '|' + p.status + '|' + p.positionId;
+  if (signature === lastCargoSignature) return;
+  lastCargoSignature = signature;
 
-  if (!job) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  if (p.jobs.length === 0) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
   box.innerHTML = '';
 
-  const text = document.createElement('div');
-  const status = job.pickedUp ? 'везёшь' : 'нужно забрать';
-  text.textContent = `Заказ: ${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.payout} ₽ (${status})`;
-  box.appendChild(text);
+  const spec = vehicleSpec();
+  const bar = document.createElement('div');
+  bar.className = 'cargo-bar-label';
+  bar.textContent = `Груз: ${cargoWeightKg().toFixed(1)}/${spec.kg} кг · ${Math.round(cargoVolumeL())}/${spec.l} л`;
+  box.appendChild(bar);
 
-  const btn = document.createElement('button');
-  if (!job.pickedUp) {
-    const canPickup = p.status === 'idle' && p.positionId === job.fromId;
-    btn.textContent = canPickup ? '📦 Забрать заказ' : `📦 Забрать заказ (нужно доехать до «${pointById(job.fromId).name}»)`;
-    btn.disabled = !canPickup;
-    btn.onclick = () => { pickUpJob(); renderAll(); };
-  } else {
-    const canDeliver = p.status === 'idle' && p.positionId === job.toId;
-    btn.textContent = canDeliver ? '✅ Сдать заказ' : `✅ Сдать заказ (нужно доехать до «${pointById(job.toId).name}»)`;
-    btn.disabled = !canDeliver;
-    btn.onclick = () => { deliverJob(); renderAll(); };
-  }
-  box.appendChild(btn);
+  const list = document.createElement('ul');
+  list.className = 'cargo-list';
+  p.jobs.forEach(job => {
+    const li = document.createElement('li');
+    const info = document.createElement('div');
+    info.className = 'cargo-info';
+    const statusText = job.pickedUp ? `везёшь → ${pointById(job.toId).name}` : `забрать в ${pointById(job.fromId).name}`;
+    info.textContent = `${STORAGE_GLYPH[job.storage]} ${job.itemName} · ${job.weightKg}кг/${job.volumeL}л · ${statusText}`;
+    const btn = document.createElement('button');
+    if (!job.pickedUp) {
+      const canPickup = p.status === 'idle' && p.positionId === job.fromId;
+      btn.textContent = '📦 Забрать';
+      btn.disabled = !canPickup;
+      btn.onclick = () => { pickUpJob(job.id); renderAll(); };
+    } else {
+      const canDeliver = p.status === 'idle' && p.positionId === job.toId;
+      btn.textContent = '✅ Сдать';
+      btn.disabled = !canDeliver;
+      btn.onclick = () => { deliverJob(job.id); renderAll(); };
+    }
+    li.append(info, btn);
+    list.appendChild(li);
+  });
+  box.appendChild(list);
 }
 
 let lastJobsSignature = null;
+let lastJobsRenderRealTime = 0;
 function renderJobList() {
-  const wrap = el('job-list-wrap');
-  if (mapView !== 'city' || mapCityId !== 'rivnoe') { wrap.classList.add('hidden'); return; }
-  wrap.classList.remove('hidden');
-
-  const canTake = !state.player.job;
-  const signature = canTake + '|' + state.availableJobs.map(j => j.id).join(',');
-  if (signature === lastJobsSignature) return;
+  const canTakeMore = state.player.jobs.filter(j => !j.pickedUp).length < MAX_PENDING_JOBS;
+  const signature = canTakeMore + '|' + state.availableJobs.map(j => j.id).join(',');
+  const now = Date.now();
+  // Rebuild on real change, or once a second anyway so deadline countdowns tick.
+  if (signature === lastJobsSignature && now - lastJobsRenderRealTime < 1000) return;
   lastJobsSignature = signature;
+  lastJobsRenderRealTime = now;
 
   const ul = el('job-list');
   ul.innerHTML = '';
@@ -1102,13 +1568,16 @@ function renderJobList() {
     const li = document.createElement('li');
     const info = document.createElement('div');
     info.className = 'job-info';
-    info.textContent = `${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.distanceKm} км`;
+    const fitsCargo = job.weightKg <= vehicleSpec().kg && job.volumeL <= vehicleSpec().l;
+    info.innerHTML = `<div>${STORAGE_GLYPH[job.storage]} <b>${job.itemName}</b> — ${job.weightKg} кг / ${job.volumeL} л</div>` +
+      `<div class="job-sub">${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.distanceKm} км</div>` +
+      `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!fitsCargo ? ' · не влезает' : ''}</div>`;
     const pay = document.createElement('span');
     pay.className = 'job-pay';
     pay.textContent = `${job.payout} ₽`;
     const btn = document.createElement('button');
     btn.textContent = 'Взять';
-    btn.disabled = !canTake;
+    btn.disabled = !canTakeMore;
     btn.onclick = () => { takeJob(job.id); renderAll(); };
     li.append(info, pay, btn);
     ul.appendChild(li);
@@ -1117,26 +1586,19 @@ function renderJobList() {
 
 function renderStatusPanel() {
   const panel = el('status-panel');
-  if (mapView !== 'city' || mapCityId !== 'rivnoe') {
-    panel.textContent = 'Курьер пока работает только в Ривном. Другие города можно осмотреть, но принять заказ там нельзя.';
-    return;
-  }
   const p = state.player;
   let text;
-  if (p.status === 'idle') text = 'Стоит на месте, готов ехать';
+  if (p.status === 'idle') text = `Стоит на месте (${pointById(p.positionId).name}), готов ехать`;
   else if (p.status === 'resting') text = `Отдыхает: ${p.restPlan ? p.restPlan.label : ''}`;
   else if (p.status === 'eating') text = `Ест: ${p.eatPlan ? p.eatPlan.label : ''}`;
   else if (p.status === 'moving') {
     const a = p.activity;
-    const pct = Math.round(clamp(a.totalMinutes > 0 ? a.elapsedMinutes / a.totalMinutes : 1, 0, 1) * 100);
-    let label;
-    if (p.job && !p.job.pickedUp && a.targetId === p.job.fromId) label = 'Едет забрать заказ';
-    else if (p.job && p.job.pickedUp && a.targetId === p.job.toId) label = 'Везёт заказ';
-    else label = `Едет к: ${pointById(a.targetId).name}`;
-    text = `${label} (${pct}%)`;
+    const remainingKm = Math.max(0, a.totalKm - a.traveledKm);
+    text = `→ ${pointById(a.targetId).name} · осталось ${formatKm(remainingKm)} км`;
     if (a.problemPending) text += ' — стоит';
   }
-  panel.textContent = text;
+  const nightTag = isNight() ? ' 🌙 ночь, скорость ниже' : '';
+  panel.textContent = text + nightTag;
 }
 
 let lastActionsSignature = null;
@@ -1173,7 +1635,7 @@ function openProblemModal(action) {
     actionsBox.appendChild(b);
   };
   if (action.kind === 'breakdown') {
-    const type = BREAKDOWN_TYPES.find(t => t.id === action.typeId);
+    const type = breakdownPoolFor(vehicleSpec()).find(t => t.id === action.typeId);
     if (type.severity === 'minor') {
       addBtn(`Починить на месте — ${type.selfFixCost} ₽`, 'selfFix');
       addBtn('Ехать так, рискуя', 'ignore');
@@ -1214,11 +1676,12 @@ function renderAll() {
   el('bar-fatigue').style.width = `${state.player.fatigue}%`;
   el('bar-hunger').style.width = `${state.player.hunger}%`;
   el('bar-condition').style.width = `${state.player.vehicle.condition}%`;
+  if (state.player.status === 'moving') syncViewToPlayer();
   renderMapToggleButton();
   renderStatusPanel();
   renderPendingActions();
   renderPointPanel();
-  renderCurrentJobPanel();
+  renderCargoPanel();
   renderJobList();
   renderToasts();
   drawMap();
@@ -1226,21 +1689,46 @@ function renderAll() {
 
 // ---------- shop / workshop modals ----------
 
+let shopTab = 'vehicles';
 function openShop() {
+  el('shop-tab-vehicles').classList.toggle('active', shopTab === 'vehicles');
+  el('shop-tab-equipment').classList.toggle('active', shopTab === 'equipment');
   const list = el('shop-list');
   list.innerHTML = '';
-  VEHICLES.forEach(v => {
-    const li = document.createElement('li');
-    const owned = state.player.vehicle.type === v.id;
-    const info = document.createElement('div');
-    info.textContent = `${v.name} · ${v.speedKmh} км/ч${v.price > 0 ? ' · ' + v.price + ' ₽' : ''}`;
-    const btn = document.createElement('button');
-    btn.textContent = owned ? 'Используется' : 'Купить';
-    btn.disabled = owned || state.money < v.price;
-    btn.onclick = () => { buyVehicle(v.id); openShop(); renderAll(); };
-    li.append(info, btn);
-    list.appendChild(li);
-  });
+  if (shopTab === 'vehicles') {
+    VEHICLE_CATS_ORDER.forEach(cat => {
+      const header = document.createElement('li');
+      header.className = 'shop-cat-header';
+      header.textContent = `${CAT_GLYPH[cat]} ${CAT_LABEL[cat]}`;
+      list.appendChild(header);
+      VEHICLES.filter(v => v.cat === cat).forEach(v => {
+        const li = document.createElement('li');
+        const owned = state.player.vehicle.type === v.id;
+        const info = document.createElement('div');
+        const fuelTxt = v.fuel === 'legs' ? '' : ` · бак ${v.tank} км`;
+        info.innerHTML = `<b>${v.name}</b><div class="job-sub">${v.speed} км/ч · до ${v.trip} км за раз${fuelTxt} · ${v.kg} кг / ${v.l} л${v.fridge ? ' · встроенный холод' : ''}</div>`;
+        const btn = document.createElement('button');
+        btn.textContent = owned ? 'Используется' : (v.price === 0 ? 'Взять' : `Купить — ${v.price.toLocaleString('ru-RU')} ₽`);
+        btn.disabled = owned || state.money < v.price;
+        btn.onclick = () => { buyVehicle(v.id); openShop(); renderAll(); };
+        li.append(info, btn);
+        list.appendChild(li);
+      });
+    });
+  } else {
+    EQUIPMENT.forEach(eq => {
+      const li = document.createElement('li');
+      const owned = !!state.player.equipment[eq.id];
+      const info = document.createElement('div');
+      info.innerHTML = `<b>${eq.name}</b><div class="job-sub">Открывает: ${eq.unlocks.map(u => STORAGE_LABEL[u]).join(', ')}</div>`;
+      const btn = document.createElement('button');
+      btn.textContent = owned ? 'Есть' : `Купить — ${eq.price.toLocaleString('ru-RU')} ₽`;
+      btn.disabled = owned || state.money < eq.price;
+      btn.onclick = () => { buyEquipment(eq.id); openShop(); renderAll(); };
+      li.append(info, btn);
+      list.appendChild(li);
+    });
+  }
   el('shop-modal').classList.remove('hidden');
 }
 
@@ -1279,13 +1767,10 @@ function showGameScreen() {
   resizeCanvas();
   maintainJobPool();
   lastFrameTs = null;
-  lastJobsSignature = null;
   lastActionsSignature = null;
   lastPointPanelSignature = null;
-  lastJobPanelSignature = null;
   uiSelectedPointId = null;
-  mapView = 'city';
-  mapCityId = 'rivnoe';
+  syncViewToPlayer();
   toasts = [];
   requestAnimationFrame(frame);
 }
@@ -1370,6 +1855,8 @@ el('btn-diary').onclick = () => {
 el('btn-diary-close').onclick = () => el('diary-modal').classList.add('hidden');
 
 el('btn-shop-close').onclick = () => el('shop-modal').classList.add('hidden');
+el('shop-tab-vehicles').onclick = () => { shopTab = 'vehicles'; openShop(); };
+el('shop-tab-equipment').onclick = () => { shopTab = 'equipment'; openShop(); };
 el('btn-workshop-close').onclick = () => el('workshop-modal').classList.add('hidden');
 el('btn-workshop-repair').onclick = () => { workshopRepair(); openWorkshop(); renderAll(); };
 el('btn-workshop-upgrade').onclick = () => { workshopUpgrade(); openWorkshop(); renderAll(); };
