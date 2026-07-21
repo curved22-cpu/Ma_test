@@ -85,16 +85,6 @@ html, body { height: 100%; margin: 0; }
   letter-spacing: 0.02em;
 }
 #hud-time { font-size: 0.78rem; color: #b7c0cc; font-weight: 500; }
-.save-indicator {
-  display: inline-block; margin-left: 6px; font-size: 0.85rem;
-  opacity: 0; transition: opacity 0.3s;
-}
-.save-indicator.pulse { opacity: 1; animation: save-pulse 0.9s ease; }
-@keyframes save-pulse {
-  0% { opacity: 0; transform: scale(0.7); }
-  25% { opacity: 1; transform: scale(1.15); }
-  100% { opacity: 0; transform: scale(1); }
-}
 
 .hud-vitals {
   display: flex; gap: 10px;

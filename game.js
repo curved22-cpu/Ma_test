@@ -1184,22 +1184,9 @@ function runOfflineCatchup() {
   return summary;
 }
 
-let saveIndicatorTimer = null;
-function flashSaveIndicator() {
-  const indicator = el('save-indicator');
-  if (!indicator) return;
-  indicator.classList.remove('hidden');
-  indicator.classList.remove('pulse');
-  void indicator.offsetWidth; // restart the animation
-  indicator.classList.add('pulse');
-  clearTimeout(saveIndicatorTimer);
-  saveIndicatorTimer = setTimeout(() => indicator.classList.add('hidden'), 900);
-}
-
 function saveGame() {
   state.lastRealTimestamp = Date.now();
   localStorage.setItem(SAVE_KEY, JSON.stringify(state));
-  flashSaveIndicator();
 }
 
 // JSON round-tripping breaks the shared object identity between
