@@ -310,28 +310,39 @@ html, body { height: 100%; margin: 0; }
 
 #toast-area {
   position: absolute;
-  top: 12px;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
   z-index: 20;
-  width: calc(100% - 32px);
-  max-width: 420px;
+  width: calc(100% - 48px);
+  max-width: 380px;
   pointer-events: none;
 }
 .toast {
-  background: rgba(35,42,53,0.95);
-  border: 1px solid #3a4250;
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 0.85rem;
+  background: rgba(24,29,38,0.96);
+  border: 1px solid #4a9dd1;
+  border-radius: 14px;
+  padding: 14px 20px;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.35;
   text-align: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-  animation: toast-in 0.2s ease-out;
+  box-shadow: 0 10px 34px rgba(0,0,0,0.55);
+  animation: toast-in 0.25s ease-out;
 }
-@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.toast-leaving {
+  animation: toast-fly-to-diary 700ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+@keyframes toast-in { from { opacity: 0; transform: scale(0.85) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes toast-fly-to-diary {
+  0% { opacity: 1; transform: translate(0, 0) scale(1); }
+  30% { opacity: 1; transform: translate(0, 0) scale(1.03); }
+  100% { opacity: 0; transform: translate(var(--fly-x, 0), var(--fly-y, 0)) scale(0.1); }
+}
 
 /* HUD bar: money/time and icon buttons wrap onto their own row so nothing
    gets clipped on a phone-width screen. Vitals live below the map now. */

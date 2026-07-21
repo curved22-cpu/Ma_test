@@ -5,7 +5,8 @@ const TIME_SCALE = 100; // game runs 100x faster than real life (testing value)
 const GAME_MIN_PER_REAL_SEC = TIME_SCALE / 60;
 const DAY_START_OFFSET = 8 * 60; // game clock begins at Day 1, 08:00
 const MAX_OFFLINE_MS = 60 * 24 * 3600 * 1000; // cap catch-up at 60 real days
-const TOAST_DURATION_MS = 10000;
+const TOAST_DURATION_MS = 5000;
+const TOAST_EXIT_MS = 700; // time before expiry spent flying into the diary icon
 const CITY_KM_PER_UNIT = 0.08;   // city-local map scale (a walkable town, not a 50km sprawl)
 const COUNTRY_KM_PER_UNIT = 3;   // country map scale (cross-country distances)
 const NIGHT_START_MIN = 22 * 60;
@@ -2081,16 +2082,33 @@ function openProblemModal(action) {
   el('problem-modal').classList.remove('hidden');
 }
 
+let lastToastSignature = null;
 function renderToasts() {
   const now = Date.now();
   toasts = toasts.filter(t => t.expiresAt > now);
+  const signature = toasts.map(t => `${t.id}:${now >= t.expiresAt - TOAST_EXIT_MS}`).join(',');
+  if (signature === lastToastSignature) return;
+  lastToastSignature = signature;
+
   const area = el('toast-area');
   area.innerHTML = '';
   toasts.forEach(t => {
+    const leaving = now >= t.expiresAt - TOAST_EXIT_MS;
     const div = document.createElement('div');
     div.className = 'toast';
     div.textContent = t.text;
     area.appendChild(div);
+    if (leaving) {
+      // Fly precisely into the diary icon regardless of screen size: measure both
+      // elements' current positions and animate the exact delta between them.
+      const from = div.getBoundingClientRect();
+      const to = el('btn-diary').getBoundingClientRect();
+      const dx = (to.left + to.width / 2) - (from.left + from.width / 2);
+      const dy = (to.top + to.height / 2) - (from.top + from.height / 2);
+      div.style.setProperty('--fly-x', `${dx}px`);
+      div.style.setProperty('--fly-y', `${dy}px`);
+      div.classList.add('toast-leaving');
+    }
   });
 }
 
