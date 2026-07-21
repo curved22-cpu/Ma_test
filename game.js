@@ -1,6 +1,6 @@
 'use strict';
 
-const SAVE_KEY = 'courier_save_v2';
+const SAVE_KEY = 'courier_save_v3';
 const TIME_SCALE = 100; // game runs 100x faster than real life (testing value)
 const GAME_MIN_PER_REAL_SEC = TIME_SCALE / 60;
 const DAY_START_OFFSET = 8 * 60; // game clock begins at Day 1, 08:00
@@ -14,6 +14,8 @@ const POINT_STYLES = {
   workshop: { color: '#5c8fd6', glyph: '🔧' },
   delivery: { color: '#4a9dd1', glyph: '📦' },
 };
+
+// ---------- home city (Ривное) — the only playable city ----------
 
 const CITY_POINTS = [
   { id: 'home', name: 'Дом', type: 'home', x: 12, y: 50 },
@@ -40,17 +42,73 @@ const ROAD_EDGES = [
   ['park', 'district'],
 ];
 
+// ---------- country map — Ривное is one of several cities ----------
+
+const COUNTRY_NAME = 'Залесье';
+
+const COUNTRY_CITIES = [
+  { id: 'rivnoe', name: 'Ривное', x: 26, y: 58, playable: true },
+  { id: 'zarechye', name: 'Заречье', x: 54, y: 30 },
+  { id: 'sosnovka', name: 'Сосновка', x: 78, y: 60 },
+  { id: 'gorki', name: 'Горки', x: 18, y: 22 },
+  { id: 'lugovoe', name: 'Луговое', x: 48, y: 84 },
+  { id: 'berezovo', name: 'Берёзово', x: 86, y: 22 },
+  { id: 'kamensk', name: 'Каменск', x: 62, y: 68 },
+];
+
+const COUNTRY_ROAD_EDGES = [
+  ['rivnoe', 'zarechye'], ['rivnoe', 'gorki'], ['rivnoe', 'lugovoe'],
+  ['zarechye', 'gorki'], ['zarechye', 'berezovo'], ['zarechye', 'sosnovka'],
+  ['sosnovka', 'berezovo'], ['sosnovka', 'kamensk'], ['sosnovka', 'lugovoe'],
+  ['kamensk', 'lugovoe'],
+];
+
+function cityById(id) { return COUNTRY_CITIES.find(c => c.id === id); }
+
+const CITY_LAYOUT_CACHE = {};
+function getCityLayout(cityId) {
+  if (cityId === 'rivnoe') return { points: CITY_POINTS, edges: ROAD_EDGES };
+  if (CITY_LAYOUT_CACHE[cityId]) return CITY_LAYOUT_CACHE[cityId];
+  const rng = seededRandom(hashStr('layout:' + cityId));
+  const count = 6 + Math.floor(rng() * 4);
+  const types = ['cafe', 'shop', 'workshop', 'delivery', 'delivery', 'delivery'];
+  const points = [];
+  for (let i = 0; i < count; i++) {
+    points.push({
+      id: `${cityId}_p${i}`,
+      name: i === 0 ? 'Центр' : `Точка ${i}`,
+      type: i === 0 ? 'delivery' : types[Math.floor(rng() * types.length)],
+      x: 14 + rng() * 72,
+      y: 14 + rng() * 72,
+    });
+  }
+  const edges = [];
+  for (let i = 1; i < points.length; i++) {
+    const j = Math.floor(rng() * i);
+    edges.push([points[i].id, points[j].id]);
+  }
+  const extra = Math.floor(rng() * 3);
+  for (let i = 0; i < extra; i++) {
+    const a = points[Math.floor(rng() * points.length)];
+    const b = points[Math.floor(rng() * points.length)];
+    if (a.id !== b.id) edges.push([a.id, b.id]);
+  }
+  const layout = { points, edges };
+  CITY_LAYOUT_CACHE[cityId] = layout;
+  return layout;
+}
+
 const VEHICLES = [
   { id: 'bike', name: 'Велосипед', speedKmh: 15, price: 0 },
-  { id: 'ebike', name: 'Велосипед с мотором', speedKmh: 25, price: 400 },
-  { id: 'moped', name: 'Мопед', speedKmh: 45, price: 1200 },
+  { id: 'ebike', name: 'Электровелосипед', speedKmh: 25, price: 25000 },
+  { id: 'moped', name: 'Мопед', speedKmh: 45, price: 90000 },
 ];
 
 const BREAKDOWN_TYPES = [
-  { id: 'flat_tire', label: 'Спустило колесо', severity: 'minor', selfFixCost: 20, selfFixMinutes: 15, ignorePenalty: 1.15 },
-  { id: 'chain', label: 'Слетела цепь', severity: 'minor', selfFixCost: 10, selfFixMinutes: 8, ignorePenalty: 1.1 },
-  { id: 'wheel_bent', label: 'Погнулось колесо', severity: 'severe', towCost: 60, towMinutes: 40 },
-  { id: 'frame_crack', label: 'Треснула рама', severity: 'severe', towCost: 120, towMinutes: 70 },
+  { id: 'flat_tire', label: 'Спустило колесо', severity: 'minor', selfFixCost: 250, selfFixMinutes: 15, ignorePenalty: 1.15 },
+  { id: 'chain', label: 'Слетела цепь', severity: 'minor', selfFixCost: 150, selfFixMinutes: 8, ignorePenalty: 1.1 },
+  { id: 'wheel_bent', label: 'Погнулось колесо', severity: 'severe', towCost: 2000, towMinutes: 40 },
+  { id: 'frame_crack', label: 'Треснула рама', severity: 'severe', towCost: 4000, towMinutes: 70 },
 ];
 
 const FATIGUE_RATE_MOVING = 0.35; // per game-minute
@@ -58,26 +116,124 @@ const HUNGER_RATE_MOVING = 0.18;
 const HUNGER_RATE_IDLE = 0.12;
 const HUNGER_RATE_RESTING = 0.08;
 const HUNGER_RATE_STUCK = 0.06;
-const REST_DURATION = 240;
-const EAT_COST_CAFE = 15;
-const EAT_DURATION = 20;
-const AUTO_REST_THRESHOLD = 90;
-const AUTO_EAT_THRESHOLD = 90;
 const WEAR_PER_KM = 0.5;
-const WORKSHOP_REPAIR_COST = 20;
-const UPGRADE_COST = 150;
+const WORKSHOP_REPAIR_COST = 600;
+const UPGRADE_COST = 4000;
+
+const EAT_OPTIONS = [
+  { id: 'snack', label: 'Перекусить', minutes: 15, hungerRelief: 45 },
+  { id: 'meal', label: 'Плотно поесть', minutes: 35, hungerRelief: 100 },
+];
+const EAT_PRICE_CAFE = { snack: 150, meal: 350 };
+
+const SLEEP_OPTIONS = [
+  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30 },
+  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, fatigueRelief: 70 },
+  { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, fatigueRelief: 100 },
+];
+const IDLE_HOME_OPTION = { id: 'breathe', label: 'Просто отдохнуть, не ложась', minutes: 20, fatigueRelief: 10 };
+
+const START_MONEY = 500;
 
 function rand(min, max) { return min + Math.random() * (max - min); }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function pointById(id) { return CITY_POINTS.find(p => p.id === id); }
-function segDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y) * 0.4; }
+
+function hashStr(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return Math.abs(h) || 1;
+}
+function seededRandom(seed) {
+  let s = seed % 2147483647;
+  if (s <= 0) s += 2147483646;
+  return function () { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+}
+
+// ---------- winding roads: cached jittered polylines ----------
+
+const POLYLINE_CACHE = {};
+function windingPolyline(key, a, b, segments, maxOffset) {
+  if (POLYLINE_CACHE[key]) return POLYLINE_CACHE[key];
+  const rng = seededRandom(hashStr(key));
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len, ny = dx / len;
+  const pts = [{ x: a.x, y: a.y }];
+  let prev = 0;
+  for (let i = 1; i < segments; i++) {
+    const t = i / segments;
+    const target = (rng() * 2 - 1) * maxOffset;
+    const off = prev * 0.4 + target * 0.6;
+    prev = off;
+    pts.push({ x: a.x + dx * t + nx * off, y: a.y + dy * t + ny * off });
+  }
+  pts.push({ x: b.x, y: b.y });
+  POLYLINE_CACHE[key] = pts;
+  return pts;
+}
+function polylineLengthUnits(pts) {
+  let d = 0;
+  for (let i = 0; i < pts.length - 1; i++) d += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+  return d;
+}
+function pointOnPolyline(poly, t) {
+  t = clamp(t, 0, 1);
+  const totalLen = polylineLengthUnits(poly);
+  let target = t * totalLen;
+  for (let i = 0; i < poly.length - 1; i++) {
+    const segLen = Math.hypot(poly[i + 1].x - poly[i].x, poly[i + 1].y - poly[i].y);
+    if (target <= segLen || i === poly.length - 2) {
+      const tt = segLen === 0 ? 0 : clamp(target / segLen, 0, 1);
+      return { x: poly[i].x + (poly[i + 1].x - poly[i].x) * tt, y: poly[i].y + (poly[i + 1].y - poly[i].y) * tt };
+    }
+    target -= segLen;
+  }
+  return poly[poly.length - 1];
+}
+function getEdgePolyline(mapKey, aId, bId, aPoint, bPoint, segments, maxOffset) {
+  const sorted = [aId, bId].slice().sort();
+  const key = `${mapKey}:${sorted[0]}-${sorted[1]}`;
+  const sortedA = sorted[0] === aId ? aPoint : bPoint;
+  const sortedB = sorted[0] === aId ? bPoint : aPoint;
+  const base = windingPolyline(key, sortedA, sortedB, segments, maxOffset);
+  return sorted[0] === aId ? base : base.slice().reverse();
+}
+
+const DECOR_CACHE = {};
+function getMapDecor(mapKey) {
+  if (DECOR_CACHE[mapKey]) return DECOR_CACHE[mapKey];
+  const rng = seededRandom(hashStr('decor:' + mapKey));
+  const forests = [];
+  const forestCount = 3 + Math.floor(rng() * 3);
+  for (let i = 0; i < forestCount; i++) forests.push({ x: 5 + rng() * 90, y: 5 + rng() * 90, r: 7 + rng() * 12 });
+  const rivers = [];
+  const riverCount = rng() < 0.7 ? 1 : 2;
+  for (let i = 0; i < riverCount; i++) {
+    const vertical = rng() < 0.5;
+    const a = vertical ? { x: rng() * 100, y: 0 } : { x: 0, y: rng() * 100 };
+    const b = vertical ? { x: rng() * 100, y: 100 } : { x: 100, y: rng() * 100 };
+    rivers.push(windingPolyline(`${mapKey}:river${i}`, a, b, 9, 13));
+  }
+  const decor = { forests, rivers };
+  DECOR_CACHE[mapKey] = decor;
+  return decor;
+}
+
+// ---------- home-city road graph (with winding-road distances) ----------
+
+function segDist(aId, bId) {
+  const a = pointById(aId), b = pointById(bId);
+  const poly = getEdgePolyline('rivnoe', aId, bId, a, b, 5, 5);
+  return polylineLengthUnits(poly) * 0.4;
+}
 
 function buildGraph() {
   const g = {};
   CITY_POINTS.forEach(p => { g[p.id] = []; });
   ROAD_EDGES.forEach(([a, b]) => {
-    const d = segDist(pointById(a), pointById(b));
+    const d = segDist(a, b);
     g[a].push({ to: b, d });
     g[b].push({ to: a, d });
   });
@@ -112,7 +268,7 @@ function shortestPath(fromId, toId) {
 
 function pathDistanceKm(path) {
   let total = 0;
-  for (let i = 0; i < path.length - 1; i++) total += segDist(pointById(path[i]), pointById(path[i + 1]));
+  for (let i = 0; i < path.length - 1; i++) total += segDist(path[i], path[i + 1]);
   return total;
 }
 
@@ -120,11 +276,12 @@ function positionAlongPath(path, fracKm, totalKm) {
   if (path.length === 1) { const p = pointById(path[0]); return { x: p.x, y: p.y }; }
   let remaining = clamp(fracKm, 0, totalKm);
   for (let i = 0; i < path.length - 1; i++) {
-    const a = pointById(path[i]), b = pointById(path[i + 1]);
-    const segLen = segDist(a, b);
+    const aId = path[i], bId = path[i + 1];
+    const a = pointById(aId), b = pointById(bId);
+    const poly = getEdgePolyline('rivnoe', aId, bId, a, b, 5, 5);
+    const segLen = polylineLengthUnits(poly) * 0.4;
     if (remaining <= segLen || i === path.length - 2) {
-      const t = segLen === 0 ? 0 : clamp(remaining / segLen, 0, 1);
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      return pointOnPolyline(poly, segLen === 0 ? 0 : remaining / segLen);
     }
     remaining -= segLen;
   }
@@ -140,10 +297,12 @@ let autosaveAccum = 0;
 let toasts = [];
 let uiSelectedPointId = null;
 let catchupBuffer = null;
+let mapView = 'city'; // 'city' | 'country'
+let mapCityId = 'rivnoe';
 
 function newGameState() {
   return {
-    money: 300,
+    money: START_MONEY,
     gameTime: 0,
     lastRealTimestamp: Date.now(),
     player: {
@@ -155,6 +314,11 @@ function newGameState() {
       vehicle: { type: 'bike', speedKmh: 15, condition: 100, upgraded: false },
       restElapsed: 0,
       eatElapsed: 0,
+      restPlan: null,
+      eatPlan: null,
+      job: null, // { id, fromId, toId, distanceKm, payout, pickedUp }
+      warnedHunger: false,
+      warnedFatigue: false,
     },
     availableJobs: [],
     eventLog: [],
@@ -192,7 +356,7 @@ function generateJob() {
   let toId = pick(DELIVERY_POINT_IDS);
   while (toId === fromId) toId = pick(DELIVERY_POINT_IDS);
   const distanceKm = pathDistanceKm(shortestPath(fromId, toId));
-  const payout = Math.round(60 + distanceKm * 12 + rand(-10, 20));
+  const payout = Math.round(150 + distanceKm * 22 + rand(-20, 35));
   return { id: jobIdSeq++, fromId, toId, distanceKm: Math.round(distanceKm * 10) / 10, payout };
 }
 
@@ -206,14 +370,43 @@ function pushPendingAction(item) {
   return item;
 }
 
-function startTravel(targetId, purpose, job) {
+function cancelCurrentAction() {
   const p = state.player;
-  if (p.positionId === targetId) { onArrive(purpose, job, targetId); return; }
+  if (p.status === 'resting' || p.status === 'eating') {
+    p.status = 'idle'; p.restPlan = null; p.eatPlan = null; p.restElapsed = 0; p.eatElapsed = 0;
+  }
+}
+
+function snapToNearestNode() {
+  const p = state.player;
+  const a = p.activity;
+  if (!a) return;
+  const progress = a.totalMinutes > 0 ? a.elapsedMinutes / a.totalMinutes : 1;
+  const traveledKm = clamp(progress, 0, 1) * a.totalKm;
+  let remaining = traveledKm, node = a.path[0];
+  for (let i = 0; i < a.path.length - 1; i++) {
+    const segLen = segDist(a.path[i], a.path[i + 1]);
+    if (remaining <= segLen) { node = remaining > segLen / 2 ? a.path[i + 1] : a.path[i]; break; }
+    remaining -= segLen;
+    node = a.path[i + 1];
+  }
+  p.positionId = node;
+}
+
+function startTravel(targetId) {
+  const p = state.player;
+  if (p.status === 'moving' && p.activity) {
+    if (p.activity.problemPending) { toast('Сначала реши проблему в пути'); return; }
+    snapToNearestNode();
+  } else {
+    cancelCurrentAction();
+  }
+  if (p.positionId === targetId) { onArrive(targetId); return; }
   const path = shortestPath(p.positionId, targetId);
   const totalKm = pathDistanceKm(path);
   p.status = 'moving';
   p.activity = {
-    purpose, job: job || null, path, targetId,
+    path, targetId,
     totalMinutes: (totalKm / p.vehicle.speedKmh) * 60,
     elapsedMinutes: 0,
     totalKm,
@@ -224,64 +417,75 @@ function startTravel(targetId, purpose, job) {
   };
 }
 
-function onArrive(purpose, job, targetId) {
+function onArrive(targetId) {
   const p = state.player;
   p.positionId = targetId;
   p.status = 'idle';
   p.activity = null;
-  if (purpose === 'pickup') {
-    log(`Забрал заказ: ${pointById(job.fromId).name} → ${pointById(job.toId).name}`);
-    startTravel(job.toId, 'dropoff', job);
-  } else if (purpose === 'dropoff') {
-    state.money += job.payout;
+  if (p.job && !p.job.pickedUp && targetId === p.job.fromId) {
+    p.job.pickedUp = true;
+    log(`Забрал заказ: ${pointById(p.job.fromId).name} → ${pointById(p.job.toId).name}`);
+  } else if (p.job && p.job.pickedUp && targetId === p.job.toId) {
+    state.money += p.job.payout;
     state.stats.jobsCompleted++;
-    state.stats.totalEarned += job.payout;
-    log(`Доставил заказ, получил ${job.payout} ₽`);
-  } else if (purpose === 'eat') {
-    const atHome = p.positionId === 'home';
-    const cost = atHome ? 0 : EAT_COST_CAFE;
-    state.money -= cost;
-    p.status = 'eating';
-    p.eatElapsed = 0;
-    log(atHome ? 'Поел дома' : `Перекусил в кафе за ${cost} ₽`, { silent: true });
-  } else if (purpose === 'sleep') {
-    p.status = 'resting';
-    p.restElapsed = 0;
-    log('Лёг спать дома', { silent: true });
-  } else if (purpose === 'shop' || purpose === 'workshop') {
-    log(purpose === 'shop' ? 'Приехал в магазин техники' : 'Приехал в мастерскую', { silent: true });
+    state.stats.totalEarned += p.job.payout;
+    log(`Доставил заказ, получил ${p.job.payout} ₽`);
+    p.job = null;
   }
 }
 
 function takeJob(jobId) {
-  if (state.player.status !== 'idle') return;
+  if (state.player.job) return;
   const idx = state.availableJobs.findIndex(j => j.id === jobId);
   if (idx === -1) return;
   const job = state.availableJobs.splice(idx, 1)[0];
-  startTravel(job.fromId, 'pickup', job);
+  job.pickedUp = false;
+  state.player.job = job;
+  log(`Взял заказ: ${pointById(job.fromId).name} → ${pointById(job.toId).name}, ${job.payout} ₽`);
 }
 
-function nearestPointOfType(type) {
-  const candidates = CITY_POINTS.filter(p => p.type === type);
-  const from = pointById(state.player.positionId);
-  let best = candidates[0], bestD = Infinity;
-  candidates.forEach(c => {
-    const d = pathDistanceKm(shortestPath(from.id, c.id));
-    if (d < bestD) { bestD = d; best = c; }
-  });
-  return best.id;
-}
-
-function requestEat() {
-  if (state.player.status !== 'idle') return;
+function startEating(optionId) {
   const p = state.player;
-  if (p.positionId === 'home' || pointById(p.positionId).type === 'cafe') { onArrive('eat', null, p.positionId); return; }
-  startTravel(nearestPointOfType('cafe'), 'eat', null);
+  if (p.status !== 'idle') return;
+  const point = pointById(p.positionId);
+  const atHome = p.positionId === 'home';
+  const atCafe = point && point.type === 'cafe';
+  if (!atHome && !atCafe) return;
+  const opt = EAT_OPTIONS.find(o => o.id === optionId);
+  const cost = atHome ? 0 : EAT_PRICE_CAFE[optionId];
+  if (state.money < cost) { toast('Не хватает денег'); return; }
+  state.money -= cost;
+  p.status = 'eating';
+  p.eatElapsed = 0;
+  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label };
+  log(atHome ? `Ест дома (${opt.label})` : `Ест в кафе: ${opt.label} (${cost} ₽)`, { silent: true });
 }
 
-function requestSleep() {
-  if (state.player.status !== 'idle') return;
-  startTravel('home', 'sleep', null);
+function startSleeping(optionId) {
+  const p = state.player;
+  if (p.status !== 'idle' || p.positionId !== 'home') return;
+  const opt = SLEEP_OPTIONS.find(o => o.id === optionId);
+  p.status = 'resting';
+  p.restElapsed = 0;
+  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, label: opt.label };
+  log(`Лёг спать дома: ${opt.label}`, { silent: true });
+}
+
+function startIdleHome() {
+  const p = state.player;
+  if (p.status !== 'idle' || p.positionId !== 'home') return;
+  p.status = 'resting';
+  p.restElapsed = 0;
+  p.restPlan = { totalMinutes: IDLE_HOME_OPTION.minutes, fatigueRelief: IDLE_HOME_OPTION.fatigueRelief, label: IDLE_HOME_OPTION.label };
+  log('Немного отдохнул дома, не ложась', { silent: true });
+}
+
+function interruptRest() {
+  const p = state.player;
+  if (p.status === 'resting' || p.status === 'eating') {
+    cancelCurrentAction();
+    log('Прервал отдых', { silent: true });
+  }
 }
 
 function triggerBreakdown(activity) {
@@ -340,10 +544,10 @@ function resolvePendingAction(actionId, choice) {
       log(`Вызвал эвакуатор, починили в мастерской за ${type.towCost} ₽`);
     }
   } else if (action.kind === 'exhausted') {
+    // Roadside rest only relieves fatigue a little — it does NOT feed the courier.
     state.player.fatigue = 40;
-    state.player.hunger = clamp(state.player.hunger - 20, 0, 100);
     activity.totalMinutes += 60;
-    log('Отдохнул на обочине, силы немного вернулись');
+    log('Отдохнул на обочине, силы немного вернулись, но есть по-прежнему хочется');
   }
 
   activity.problemPending = false;
@@ -403,21 +607,32 @@ function simulateTick(dt, summary) {
         triggerExhausted(a);
         if (summary) summary.incidents++;
       } else if (a.elapsedMinutes >= a.totalMinutes) {
-        onArrive(a.purpose, a.job, a.targetId);
+        onArrive(a.targetId);
       }
     }
   } else if (p.status === 'resting') {
     p.restElapsed += dt;
     p.hunger = clamp(p.hunger + HUNGER_RATE_RESTING * dt, 0, 100);
-    if (p.restElapsed >= REST_DURATION) { p.fatigue = 0; p.status = 'idle'; log('Проснулся отдохнувшим'); }
+    if (p.restElapsed >= p.restPlan.totalMinutes) {
+      p.fatigue = clamp(p.fatigue - p.restPlan.fatigueRelief, 0, 100);
+      log(`Отдохнул: ${p.restPlan.label}`);
+      p.status = 'idle'; p.restPlan = null;
+    }
   } else if (p.status === 'eating') {
     p.eatElapsed += dt;
-    if (p.eatElapsed >= EAT_DURATION) { p.hunger = 0; p.status = 'idle'; log('Перекусил'); }
+    if (p.eatElapsed >= p.eatPlan.totalMinutes) {
+      p.hunger = clamp(p.hunger - p.eatPlan.hungerRelief, 0, 100);
+      log(`Поел: ${p.eatPlan.label}`);
+      p.status = 'idle'; p.eatPlan = null;
+    }
   } else {
     p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
-    if (p.hunger >= AUTO_EAT_THRESHOLD) requestEat();
-    else if (p.fatigue >= AUTO_REST_THRESHOLD) requestSleep();
   }
+
+  if (p.hunger >= 90 && !p.warnedHunger) { p.warnedHunger = true; toast('Курьер сильно голоден — пора поесть'); }
+  if (p.hunger < 80) p.warnedHunger = false;
+  if (p.fatigue >= 90 && !p.warnedFatigue) { p.warnedFatigue = true; toast('Курьер сильно устал — пора отдохнуть'); }
+  if (p.fatigue < 80) p.warnedFatigue = false;
 
   if (Math.random() < dt * 0.01) maintainJobPool();
   state.gameTime += dt;
@@ -474,6 +689,7 @@ const gameScreen = el('game-screen');
 const canvas = el('map-canvas');
 const ctx = canvas.getContext('2d');
 let lastPointPixels = {};
+let lastCountryPixels = {};
 
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
@@ -483,33 +699,75 @@ function resizeCanvas() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-function drawMap() {
-  const w = canvas.getBoundingClientRect().width;
-  const h = canvas.getBoundingClientRect().height;
-  ctx.clearRect(0, 0, w, h);
-  const toPx = (x, y) => [w * (x / 100), h * (y / 100)];
+function strokePolyline(poly, toPx) {
+  if (poly.length < 2) return;
+  ctx.beginPath();
+  const [x0, y0] = toPx(poly[0].x, poly[0].y);
+  ctx.moveTo(x0, y0);
+  for (let i = 1; i < poly.length - 1; i++) {
+    const [cx, cy] = toPx(poly[i].x, poly[i].y);
+    const [mx, my] = toPx((poly[i].x + poly[i + 1].x) / 2, (poly[i].y + poly[i + 1].y) / 2);
+    ctx.quadraticCurveTo(cx, cy, mx, my);
+  }
+  const last = poly[poly.length - 1];
+  const [xl, yl] = toPx(last.x, last.y);
+  ctx.lineTo(xl, yl);
+  ctx.stroke();
+}
 
-  ctx.fillStyle = 'rgba(90, 140, 90, 0.12)';
-  ctx.beginPath(); ctx.arc(...toPx(15, 82), 60, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = 'rgba(140, 120, 90, 0.10)';
-  ctx.beginPath(); ctx.arc(...toPx(75, 45), 70, 0, Math.PI * 2); ctx.fill();
+function drawDecor(decor, toPx, w) {
+  const scale = w / 100;
+  decor.forests.forEach(f => {
+    ctx.fillStyle = 'rgba(70,130,70,0.16)';
+    const blobs = [[0, 0], [0.5, 0.3], [-0.4, 0.35], [0.2, -0.4]];
+    blobs.forEach(([dx, dy]) => {
+      const [x, y] = toPx(f.x + dx * f.r * 0.5, f.y + dy * f.r * 0.5);
+      ctx.beginPath(); ctx.arc(x, y, f.r * 0.6 * scale, 0, Math.PI * 2); ctx.fill();
+    });
+  });
+  decor.rivers.forEach(river => {
+    ctx.strokeStyle = 'rgba(70,120,190,0.35)';
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    strokePolyline(river, toPx);
+    ctx.strokeStyle = 'rgba(100,150,210,0.45)';
+    ctx.lineWidth = 2.5;
+    strokePolyline(river, toPx);
+  });
+}
 
+function drawRoads(mapKey, points, edges, toPx) {
+  const byId = id => points.find(p => p.id === id);
   ctx.strokeStyle = '#333c4a';
   ctx.lineWidth = 4;
   ctx.lineCap = 'round';
-  ROAD_EDGES.forEach(([aId, bId]) => {
-    const a = pointById(aId), b = pointById(bId);
-    ctx.beginPath(); ctx.moveTo(...toPx(a.x, a.y)); ctx.lineTo(...toPx(b.x, b.y)); ctx.stroke();
+  edges.forEach(([aId, bId]) => {
+    const a = byId(aId), b = byId(bId);
+    const poly = getEdgePolyline(mapKey, aId, bId, a, b, 5, 5);
+    strokePolyline(poly, toPx);
   });
   ctx.strokeStyle = '#4a5568';
   ctx.lineWidth = 1;
-  ROAD_EDGES.forEach(([aId, bId]) => {
-    const a = pointById(aId), b = pointById(bId);
-    ctx.beginPath(); ctx.moveTo(...toPx(a.x, a.y)); ctx.lineTo(...toPx(b.x, b.y)); ctx.stroke();
+  edges.forEach(([aId, bId]) => {
+    const a = byId(aId), b = byId(bId);
+    const poly = getEdgePolyline(mapKey, aId, bId, a, b, 5, 5);
+    strokePolyline(poly, toPx);
   });
+}
+
+function drawCityMap() {
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+  const toPx = (x, y) => [w * (x / 100), h * (y / 100)];
+  const layout = getCityLayout(mapCityId);
+  const isHome = mapCityId === 'rivnoe';
+
+  drawDecor(getMapDecor('city:' + mapCityId), toPx, w);
+  drawRoads(mapCityId, layout.points, layout.edges, toPx);
 
   lastPointPixels = {};
-  CITY_POINTS.forEach(pnt => {
+  layout.points.forEach(pnt => {
     const [x, y] = toPx(pnt.x, pnt.y);
     lastPointPixels[pnt.id] = { x, y };
     const style = POINT_STYLES[pnt.type];
@@ -524,6 +782,8 @@ function drawMap() {
     ctx.font = '9px system-ui';
     ctx.fillText(pnt.name, x + 14, y + 3);
   });
+
+  if (!isHome) return;
 
   const p = state.player;
   let cx, cy;
@@ -544,67 +804,209 @@ function drawMap() {
   ctx.textAlign = 'left';
 }
 
+function drawCountryMap() {
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+  const toPx = (x, y) => [w * (x / 100), h * (y / 100)];
+
+  drawDecor(getMapDecor('country'), toPx, w);
+
+  ctx.strokeStyle = '#333c4a';
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  COUNTRY_ROAD_EDGES.forEach(([aId, bId]) => {
+    const a = cityById(aId), b = cityById(bId);
+    const poly = getEdgePolyline('country', aId, bId, a, b, 7, 7);
+    strokePolyline(poly, toPx);
+  });
+  ctx.strokeStyle = '#4a5568';
+  ctx.lineWidth = 1.5;
+  COUNTRY_ROAD_EDGES.forEach(([aId, bId]) => {
+    const a = cityById(aId), b = cityById(bId);
+    const poly = getEdgePolyline('country', aId, bId, a, b, 7, 7);
+    strokePolyline(poly, toPx);
+  });
+
+  lastCountryPixels = {};
+  COUNTRY_CITIES.forEach(c => {
+    const [x, y] = toPx(c.x, c.y);
+    lastCountryPixels[c.id] = { x, y };
+    ctx.fillStyle = c.playable ? '#7fd17f' : '#e2a63b';
+    ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.fill();
+    ctx.font = '15px system-ui';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🏙', x, y);
+    ctx.font = 'bold 11px system-ui';
+    ctx.fillStyle = '#eee';
+    ctx.fillText(c.name, x, y + 22);
+    ctx.textAlign = 'left';
+  });
+}
+
+function drawMap() {
+  if (!state) return;
+  if (mapView === 'country') drawCountryMap();
+  else drawCityMap();
+}
+
+function showCityView(cityId) {
+  mapView = 'city';
+  mapCityId = cityId;
+  uiSelectedPointId = null;
+  lastPointPanelSignature = null;
+  lastJobsSignature = null;
+}
+function showCountryView() {
+  mapView = 'country';
+  uiSelectedPointId = null;
+  lastPointPanelSignature = null;
+}
+
 canvas.addEventListener('click', (e) => {
-  if (!state || state.player.status !== 'idle') { uiSelectedPointId = null; renderPointPanel(); return; }
+  if (!state) return;
   const rect = canvas.getBoundingClientRect();
   const clickX = e.clientX - rect.left, clickY = e.clientY - rect.top;
+
+  if (mapView === 'country') {
+    for (const c of COUNTRY_CITIES) {
+      const pos = lastCountryPixels[c.id];
+      if (pos && Math.hypot(pos.x - clickX, pos.y - clickY) < 20) {
+        showCityView(c.id);
+        renderAll();
+        return;
+      }
+    }
+    return;
+  }
+
+  if (mapCityId !== 'rivnoe') return; // other cities are look-only for now
   let found = null;
   for (const id in lastPointPixels) {
     const pos = lastPointPixels[id];
     if (Math.hypot(pos.x - clickX, pos.y - clickY) < 16) { found = id; break; }
   }
   uiSelectedPointId = found;
+  lastPointPanelSignature = null;
   renderPointPanel();
 });
 
-const TRAVEL_PURPOSE_BY_TYPE = { home: 'sleep', cafe: 'eat', shop: 'shop', workshop: 'workshop', delivery: 'visit' };
+function touchDist(touches) { return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY); }
+let pinchStartDist = null;
+canvas.addEventListener('touchstart', (e) => { if (e.touches.length === 2) pinchStartDist = touchDist(e.touches); });
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2 && pinchStartDist !== null) {
+    const d = touchDist(e.touches);
+    const delta = d - pinchStartDist;
+    if (delta < -40 && mapView === 'city') { pinchStartDist = null; showCountryView(); renderAll(); }
+    else if (delta > 40 && mapView === 'country') {
+      const rect = canvas.getBoundingClientRect();
+      const mx = ((e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left) / rect.width * 100;
+      const my = ((e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top) / rect.height * 100;
+      let nearest = null, bestD = Infinity;
+      COUNTRY_CITIES.forEach(c => { const dd = Math.hypot(c.x - mx, c.y - my); if (dd < bestD) { bestD = dd; nearest = c; } });
+      if (nearest && bestD < 30) { pinchStartDist = null; showCityView(nearest.id); renderAll(); }
+    }
+  }
+}, { passive: true });
+canvas.addEventListener('touchend', (e) => { if (e.touches.length < 2) pinchStartDist = null; });
+
+canvas.addEventListener('wheel', (e) => {
+  if (!state) return;
+  e.preventDefault();
+  if (mapView === 'city' && e.deltaY > 0) { showCountryView(); renderAll(); return; }
+  if (mapView === 'country' && e.deltaY < 0) {
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width * 100;
+    const my = (e.clientY - rect.top) / rect.height * 100;
+    let nearest = null, bestD = Infinity;
+    COUNTRY_CITIES.forEach(c => { const dd = Math.hypot(c.x - mx, c.y - my); if (dd < bestD) { bestD = dd; nearest = c; } });
+    if (nearest && bestD < 25) { showCityView(nearest.id); renderAll(); }
+  }
+}, { passive: false });
+
+function renderMapToggleButton() {
+  const btn = el('btn-map-toggle');
+  if (mapView === 'country') btn.textContent = '🏙 В город';
+  else btn.textContent = '🗺 Карта страны';
+}
 
 let lastPointPanelSignature = null;
 function renderPointPanel() {
   const panel = el('point-panel');
-  const visible = uiSelectedPointId && state && state.player.status === 'idle';
-  const signature = visible ? `${uiSelectedPointId}|${state.player.positionId}` : 'hidden';
+  const visible = mapView === 'city' && mapCityId === 'rivnoe' && uiSelectedPointId && state;
+  const signature = visible ? `${uiSelectedPointId}|${state.player.positionId}|${state.player.status}` : 'hidden';
   if (signature === lastPointPanelSignature) return;
   lastPointPanelSignature = signature;
 
   if (!visible) { panel.classList.add('hidden'); return; }
   const point = pointById(uiSelectedPointId);
-  const here = state.player.positionId === uiSelectedPointId;
+  const p = state.player;
+  const here = p.status !== 'moving' && p.positionId === uiSelectedPointId;
   panel.classList.remove('hidden');
   panel.innerHTML = '';
-  const label = document.createElement('span');
+  const label = document.createElement('div');
   label.textContent = point.name + (here ? ' (ты тут)' : '');
   panel.appendChild(label);
 
-  let btnText = null, onClick = null;
+  const buttons = document.createElement('div');
+  buttons.className = 'point-panel-buttons';
+  panel.appendChild(buttons);
+
+  const addBtn = (text, onClick, disabled) => {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.disabled = !!disabled;
+    b.onclick = onClick;
+    buttons.appendChild(b);
+  };
+
   if (!here) {
-    btnText = 'Поехать';
-    onClick = () => { startTravel(point.id, TRAVEL_PURPOSE_BY_TYPE[point.type]); uiSelectedPointId = null; renderAll(); };
-  } else if (point.type === 'shop') {
-    btnText = 'Открыть магазин';
-    onClick = () => openShop();
-  } else if (point.type === 'workshop') {
-    btnText = 'Открыть мастерскую';
-    onClick = () => openWorkshop();
-  } else if (point.type === 'cafe') {
-    btnText = 'Перекусить';
-    onClick = () => { requestEat(); uiSelectedPointId = null; renderAll(); };
-  } else if (point.type === 'home') {
-    btnText = 'Лечь спать';
-    onClick = () => { requestSleep(); uiSelectedPointId = null; renderAll(); };
+    addBtn('Поехать сюда', () => { startTravel(point.id); uiSelectedPointId = null; renderAll(); });
+    return;
   }
 
-  if (btnText) {
-    const btn = document.createElement('button');
-    btn.textContent = btnText;
-    btn.onclick = onClick;
-    panel.appendChild(btn);
+  if (p.status === 'resting' || p.status === 'eating') {
+    const planLabel = (p.restPlan || p.eatPlan || {}).label || '';
+    label.textContent += ` — ${planLabel}...`;
+    addBtn('Прервать', () => { interruptRest(); renderAll(); });
+    return;
   }
+
+  if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop()); return; }
+  if (point.type === 'workshop') { addBtn('Открыть мастерскую', () => openWorkshop()); return; }
+
+  if (point.type === 'cafe') {
+    EAT_OPTIONS.forEach(opt => {
+      const cost = EAT_PRICE_CAFE[opt.id];
+      addBtn(`${opt.label} — ${cost} ₽`, () => { startEating(opt.id); renderAll(); }, state.money < cost);
+    });
+    return;
+  }
+
+  if (point.type === 'home') {
+    EAT_OPTIONS.forEach(opt => addBtn(`${opt.label} (бесплатно)`, () => { startEating(opt.id); renderAll(); }));
+    SLEEP_OPTIONS.forEach(opt => addBtn(opt.label, () => { startSleeping(opt.id); renderAll(); }));
+    addBtn(IDLE_HOME_OPTION.label, () => { startIdleHome(); renderAll(); });
+  }
+}
+
+function renderCurrentJobPanel() {
+  const box = el('current-job-panel');
+  const job = state.player.job;
+  if (!job) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.classList.remove('hidden');
+  const status = job.pickedUp ? 'везёшь' : 'нужно забрать';
+  box.textContent = `Заказ: ${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.payout} ₽ (${status})`;
 }
 
 let lastJobsSignature = null;
 function renderJobList() {
-  const canTake = state.player.status === 'idle';
+  const wrap = el('job-list-wrap');
+  if (mapView !== 'city' || mapCityId !== 'rivnoe') { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+
+  const canTake = !state.player.job;
   const signature = canTake + '|' + state.availableJobs.map(j => j.id).join(',');
   if (signature === lastJobsSignature) return;
   lastJobsSignature = signature;
@@ -629,17 +1031,24 @@ function renderJobList() {
 }
 
 function renderStatusPanel() {
-  const p = state.player;
   const panel = el('status-panel');
+  if (mapView !== 'city' || mapCityId !== 'rivnoe') {
+    panel.textContent = 'Курьер пока работает только в Ривном. Другие города можно осмотреть, но принять заказ там нельзя.';
+    return;
+  }
+  const p = state.player;
   let text;
-  if (p.status === 'idle') text = 'Стоит на месте, готов к заказу';
-  else if (p.status === 'resting') text = 'Спит дома';
-  else if (p.status === 'eating') text = 'Перекусывает';
+  if (p.status === 'idle') text = 'Стоит на месте, готов ехать';
+  else if (p.status === 'resting') text = `Отдыхает: ${p.restPlan ? p.restPlan.label : ''}`;
+  else if (p.status === 'eating') text = `Ест: ${p.eatPlan ? p.eatPlan.label : ''}`;
   else if (p.status === 'moving') {
     const a = p.activity;
     const pct = Math.round(clamp(a.totalMinutes > 0 ? a.elapsedMinutes / a.totalMinutes : 1, 0, 1) * 100);
-    const labels = { pickup: 'Едет за заказом', dropoff: 'Везёт заказ', eat: 'Едет перекусить', sleep: 'Едет домой', shop: 'Едет в магазин', workshop: 'Едет в мастерскую', visit: 'В пути' };
-    text = `${labels[a.purpose] || 'В пути'} (${pct}%)`;
+    let label;
+    if (p.job && !p.job.pickedUp && a.targetId === p.job.fromId) label = 'Едет забрать заказ';
+    else if (p.job && p.job.pickedUp && a.targetId === p.job.toId) label = 'Везёт заказ';
+    else label = `Едет к: ${pointById(a.targetId).name}`;
+    text = `${label} (${pct}%)`;
     if (a.problemPending) text += ' — стоит';
   }
   panel.textContent = text;
@@ -720,12 +1129,11 @@ function renderAll() {
   el('bar-fatigue').style.width = `${state.player.fatigue}%`;
   el('bar-hunger').style.width = `${state.player.hunger}%`;
   el('bar-condition').style.width = `${state.player.vehicle.condition}%`;
-  const idle = state.player.status === 'idle';
-  el('btn-eat').disabled = !idle;
-  el('btn-sleep').disabled = !idle;
+  renderMapToggleButton();
   renderStatusPanel();
   renderPendingActions();
   renderPointPanel();
+  renderCurrentJobPanel();
   renderJobList();
   renderToasts();
   drawMap();
@@ -753,8 +1161,10 @@ function openShop() {
 
 function openWorkshop() {
   el('workshop-condition').textContent = `Состояние техники: ${Math.round(state.player.vehicle.condition)}%`;
+  el('btn-workshop-repair').textContent = `Полный ремонт — ${WORKSHOP_REPAIR_COST} ₽`;
   el('btn-workshop-repair').disabled = state.money < WORKSHOP_REPAIR_COST;
   const upgraded = state.player.vehicle.upgraded;
+  el('btn-workshop-upgrade').textContent = `Укрепить подвеску — ${UPGRADE_COST} ₽`;
   el('btn-workshop-upgrade').disabled = upgraded || state.money < UPGRADE_COST;
   el('workshop-upgrade-hint').textContent = upgraded ? 'Подвеска уже укреплена' : 'Снижает шанс серьёзных поломок';
   el('workshop-modal').classList.remove('hidden');
@@ -788,6 +1198,8 @@ function showGameScreen() {
   lastActionsSignature = null;
   lastPointPanelSignature = null;
   uiSelectedPointId = null;
+  mapView = 'city';
+  mapCityId = 'rivnoe';
   toasts = [];
   requestAnimationFrame(frame);
 }
@@ -843,8 +1255,14 @@ el('import-file').onchange = (e) => {
   reader.readAsText(file);
 };
 
-el('btn-eat').onclick = () => { requestEat(); renderAll(); };
-el('btn-sleep').onclick = () => { requestSleep(); renderAll(); };
+el('btn-map-toggle').onclick = () => {
+  if (mapView === 'country') showCityView('rivnoe');
+  else showCountryView();
+  renderAll();
+};
+
+el('btn-open-menu').onclick = () => el('menu-modal').classList.remove('hidden');
+el('btn-menu-close').onclick = () => el('menu-modal').classList.add('hidden');
 el('btn-save').onclick = () => { saveGame(); };
 el('btn-export').onclick = () => {
   saveGame();
@@ -856,7 +1274,7 @@ el('btn-export').onclick = () => {
   a.click();
   URL.revokeObjectURL(url);
 };
-el('btn-menu').onclick = () => { saveGame(); showMenuScreen(); };
+el('btn-menu').onclick = () => { saveGame(); el('menu-modal').classList.add('hidden'); showMenuScreen(); };
 el('btn-offline-ok').onclick = () => el('offline-modal').classList.add('hidden');
 
 el('btn-diary').onclick = () => {

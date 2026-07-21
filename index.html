@@ -25,7 +25,11 @@
       <div class="topbar-row">
         <span id="hud-money">0 ₽</span>
         <span id="hud-time">День 1, 08:00</span>
-        <button id="btn-diary" class="icon-btn">📔</button>
+        <div class="topbar-icons">
+          <button id="btn-map-toggle" class="icon-btn map-toggle-btn">🗺 Карта страны</button>
+          <button id="btn-diary" class="icon-btn">📔</button>
+          <button id="btn-open-menu" class="icon-btn">☰</button>
+        </div>
       </div>
       <div class="bars">
         <div class="bar-row">
@@ -51,18 +55,14 @@
 
     <div id="actions-notify" class="notify-list"></div>
 
+    <div id="current-job-panel" class="panel hidden"></div>
+
     <div id="status-panel" class="panel"></div>
 
-    <div class="actions-row">
-      <button id="btn-eat">Поесть</button>
-      <button id="btn-sleep">Спать</button>
-      <button id="btn-save">Сохранить</button>
-      <button id="btn-export">Скачать сохранение</button>
-      <button id="btn-menu">В меню</button>
+    <div id="job-list-wrap">
+      <h3>Доступные заказы</h3>
+      <ul id="job-list" class="job-list"></ul>
     </div>
-
-    <h3>Доступные заказы</h3>
-    <ul id="job-list" class="job-list"></ul>
   </section>
 
   <div id="offline-modal" class="modal hidden">
@@ -95,6 +95,16 @@
       <h2>Магазин техники</h2>
       <ul id="shop-list" class="shop-list"></ul>
       <button id="btn-shop-close">Закрыть</button>
+    </div>
+  </div>
+
+  <div id="menu-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Меню</h2>
+      <button id="btn-save">Сохранить</button>
+      <button id="btn-export">Скачать сохранение</button>
+      <button id="btn-menu">Выйти в главное меню</button>
+      <button id="btn-menu-close">Закрыть</button>
     </div>
   </div>
 
