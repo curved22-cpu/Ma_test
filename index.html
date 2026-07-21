@@ -26,7 +26,7 @@
         <span id="hud-money">0 ₽</span>
         <span id="hud-time">День 1, 08:00</span>
         <div class="topbar-icons">
-          <button id="btn-map-toggle" class="icon-btn map-toggle-btn">🗺 Карта страны</button>
+          <button id="btn-center-me" class="icon-btn map-toggle-btn">📍 Ко мне</button>
           <button id="btn-diary" class="icon-btn">📔</button>
           <button id="btn-open-menu" class="icon-btn">☰</button>
         </div>
@@ -59,10 +59,7 @@
 
     <div id="status-panel" class="panel"></div>
 
-    <div id="job-list-wrap">
-      <h3>Доступные заказы</h3>
-      <ul id="job-list" class="job-list"></ul>
-    </div>
+    <button id="btn-open-orders" class="orders-open-btn">📋 Заказы (<span id="orders-count">0</span>)</button>
   </section>
 
   <div id="offline-modal" class="modal hidden">
@@ -71,6 +68,14 @@
       <p id="offline-header"></p>
       <ul id="offline-list" class="diary-list"></ul>
       <button id="btn-offline-ok">Понятно</button>
+    </div>
+  </div>
+
+  <div id="bankruptcy-modal" class="modal hidden">
+    <div class="modal-box">
+      <h2>Банкротство</h2>
+      <p>Расходы на жизнь и содержание техники съели весь бюджет и ушли в долг, из которого выбраться не вышло. Дело закрыто.</p>
+      <button id="btn-bankruptcy-restart">Начать заново</button>
     </div>
   </div>
 
@@ -99,6 +104,33 @@
       </div>
       <ul id="shop-list" class="shop-list"></ul>
       <button id="btn-shop-close">Закрыть</button>
+    </div>
+  </div>
+
+  <div id="orders-modal" class="modal hidden">
+    <div class="modal-box orders-box">
+      <h2>Заказы</h2>
+      <div class="orders-filters">
+        <select id="filter-storage">
+          <option value="all">Груз: любой</option>
+          <option value="normal">📦 Обычный</option>
+          <option value="chilled">🧊 Охлаждённый</option>
+          <option value="frozen">❄️ Заморозка</option>
+          <option value="fragile">🥚 Хрупкое</option>
+          <option value="live_small">🐾 Мелкое животное</option>
+          <option value="live_large">🐕 Крупное животное</option>
+          <option value="valuable">💎 Ценности</option>
+        </select>
+        <select id="filter-urgency">
+          <option value="all">Срочность: любая</option>
+          <option value="urgent">🔥 Срочно</option>
+          <option value="standard">🕐 Обычно</option>
+          <option value="none">∞ Без срока</option>
+        </select>
+        <label class="filter-checkbox"><input type="checkbox" id="filter-fits-only"> Только подходящие</label>
+      </div>
+      <ul id="orders-list" class="job-list"></ul>
+      <button id="btn-orders-close">Закрыть</button>
     </div>
   </div>
 
