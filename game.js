@@ -229,6 +229,17 @@ function segDist(aId, bId) {
   return polylineLengthUnits(poly) * 0.4;
 }
 
+// A waypoint is either a node id (string, looked up via pointById) or a plain
+// {x,y} coordinate — used for the courier's exact live position when a route
+// is redirected mid-trip, so the remaining distance is charged honestly
+// instead of snapping for free to the nearest graph node.
+function waypointCoord(wp) { return typeof wp === 'string' ? pointById(wp) : wp; }
+function waypointDist(wpA, wpB) {
+  if (typeof wpA === 'string' && typeof wpB === 'string') return segDist(wpA, wpB);
+  const a = waypointCoord(wpA), b = waypointCoord(wpB);
+  return Math.hypot(a.x - b.x, a.y - b.y) * 0.4;
+}
+
 function buildGraph() {
   const g = {};
   CITY_POINTS.forEach(p => { g[p.id] = []; });
@@ -268,24 +279,33 @@ function shortestPath(fromId, toId) {
 
 function pathDistanceKm(path) {
   let total = 0;
-  for (let i = 0; i < path.length - 1; i++) total += segDist(path[i], path[i + 1]);
+  for (let i = 0; i < path.length - 1; i++) total += waypointDist(path[i], path[i + 1]);
   return total;
 }
 
 function positionAlongPath(path, fracKm, totalKm) {
-  if (path.length === 1) { const p = pointById(path[0]); return { x: p.x, y: p.y }; }
+  if (path.length === 1) { const p = waypointCoord(path[0]); return { x: p.x, y: p.y }; }
   let remaining = clamp(fracKm, 0, totalKm);
   for (let i = 0; i < path.length - 1; i++) {
-    const aId = path[i], bId = path[i + 1];
-    const a = pointById(aId), b = pointById(bId);
-    const poly = getEdgePolyline('rivnoe', aId, bId, a, b, 5, 5);
-    const segLen = polylineLengthUnits(poly) * 0.4;
+    const wpA = path[i], wpB = path[i + 1];
+    const bothNodes = typeof wpA === 'string' && typeof wpB === 'string';
+    let segLen, poly = null;
+    if (bothNodes) {
+      const a = pointById(wpA), b = pointById(wpB);
+      poly = getEdgePolyline('rivnoe', wpA, wpB, a, b, 5, 5);
+      segLen = polylineLengthUnits(poly) * 0.4;
+    } else {
+      segLen = waypointDist(wpA, wpB);
+    }
     if (remaining <= segLen || i === path.length - 2) {
-      return pointOnPolyline(poly, segLen === 0 ? 0 : remaining / segLen);
+      if (poly) return pointOnPolyline(poly, segLen === 0 ? 0 : remaining / segLen);
+      const a = waypointCoord(wpA), b = waypointCoord(wpB);
+      const t = segLen === 0 ? 0 : clamp(remaining / segLen, 0, 1);
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
     }
     remaining -= segLen;
   }
-  const last = pointById(path[path.length - 1]);
+  const last = waypointCoord(path[path.length - 1]);
   return { x: last.x, y: last.y };
 }
 
@@ -377,33 +397,35 @@ function cancelCurrentAction() {
   }
 }
 
-function snapToNearestNode() {
+// Which real-world edge the courier is currently on, and how far along it —
+// used to cost a mid-trip redirect honestly instead of snapping for free.
+function currentEdgeState() {
   const p = state.player;
   const a = p.activity;
-  if (!a) return;
-  const progress = a.totalMinutes > 0 ? a.elapsedMinutes / a.totalMinutes : 1;
-  const traveledKm = clamp(progress, 0, 1) * a.totalKm;
-  let remaining = traveledKm, node = a.path[0];
+  if (!a) return null;
+  const progress = a.totalMinutes > 0 ? clamp(a.elapsedMinutes / a.totalMinutes, 0, 1) : 1;
+  let remaining = progress * a.totalKm;
   for (let i = 0; i < a.path.length - 1; i++) {
-    const segLen = segDist(a.path[i], a.path[i + 1]);
-    if (remaining <= segLen) { node = remaining > segLen / 2 ? a.path[i + 1] : a.path[i]; break; }
+    const wpA = a.path[i], wpB = a.path[i + 1];
+    const segLen = waypointDist(wpA, wpB);
+    if (remaining <= segLen || i === a.path.length - 2) {
+      return {
+        aId: typeof wpA === 'string' ? wpA : null,
+        bId: typeof wpB === 'string' ? wpB : null,
+        travelledOnEdge: clamp(remaining, 0, segLen),
+        remainingOnEdge: clamp(segLen - remaining, 0, segLen),
+      };
+    }
     remaining -= segLen;
-    node = a.path[i + 1];
   }
-  p.positionId = node;
+  return null;
 }
 
-function startTravel(targetId) {
+function beginTravelFromWaypoints(path) {
   const p = state.player;
-  if (p.status === 'moving' && p.activity) {
-    if (p.activity.problemPending) { toast('Сначала реши проблему в пути'); return; }
-    snapToNearestNode();
-  } else {
-    cancelCurrentAction();
-  }
-  if (p.positionId === targetId) { onArrive(targetId); return; }
-  const path = shortestPath(p.positionId, targetId);
+  const targetId = path[path.length - 1];
   const totalKm = pathDistanceKm(path);
+  if (totalKm <= 0.0001) { onArrive(targetId); return; }
   p.status = 'moving';
   p.activity = {
     path, targetId,
@@ -417,21 +439,60 @@ function startTravel(targetId) {
   };
 }
 
+function startTravel(targetId) {
+  const p = state.player;
+  if (p.status === 'moving' && p.activity) {
+    if (p.activity.problemPending) { toast('Сначала реши проблему в пути'); return; }
+    const edge = currentEdgeState();
+    const curFrac = p.activity.totalMinutes > 0 ? clamp(p.activity.elapsedMinutes / p.activity.totalMinutes, 0, 1) : 1;
+    const currentPoint = positionAlongPath(p.activity.path, curFrac * p.activity.totalKm, p.activity.totalKm);
+    if (!edge) return;
+    if (edge.aId === null) {
+      // Still on the straight-line first leg of an earlier redirect: the only
+      // honest option is to keep going to the upcoming real node, then onward.
+      const tail = shortestPath(edge.bId, targetId);
+      beginTravelFromWaypoints([currentPoint, edge.bId, ...tail.slice(1)]);
+      return;
+    }
+    const tailViaA = shortestPath(edge.aId, targetId);
+    const tailViaB = shortestPath(edge.bId, targetId);
+    const costViaA = edge.travelledOnEdge + pathDistanceKm(tailViaA);
+    const costViaB = edge.remainingOnEdge + pathDistanceKm(tailViaB);
+    const path = costViaA <= costViaB
+      ? [currentPoint, edge.aId, ...tailViaA.slice(1)]
+      : [currentPoint, edge.bId, ...tailViaB.slice(1)];
+    beginTravelFromWaypoints(path);
+    return;
+  }
+  cancelCurrentAction();
+  if (p.positionId === targetId) { onArrive(targetId); return; }
+  beginTravelFromWaypoints(shortestPath(p.positionId, targetId));
+}
+
 function onArrive(targetId) {
   const p = state.player;
   p.positionId = targetId;
   p.status = 'idle';
   p.activity = null;
-  if (p.job && !p.job.pickedUp && targetId === p.job.fromId) {
-    p.job.pickedUp = true;
-    log(`Забрал заказ: ${pointById(p.job.fromId).name} → ${pointById(p.job.toId).name}`);
-  } else if (p.job && p.job.pickedUp && targetId === p.job.toId) {
-    state.money += p.job.payout;
-    state.stats.jobsCompleted++;
-    state.stats.totalEarned += p.job.payout;
-    log(`Доставил заказ, получил ${p.job.payout} ₽`);
-    p.job = null;
-  }
+}
+
+function pickUpJob() {
+  const p = state.player;
+  if (!p.job || p.job.pickedUp) return;
+  if (p.status !== 'idle' || p.positionId !== p.job.fromId) return;
+  p.job.pickedUp = true;
+  log(`Забрал заказ: ${pointById(p.job.fromId).name} → ${pointById(p.job.toId).name}`);
+}
+
+function deliverJob() {
+  const p = state.player;
+  if (!p.job || !p.job.pickedUp) return;
+  if (p.status !== 'idle' || p.positionId !== p.job.toId) return;
+  state.money += p.job.payout;
+  state.stats.jobsCompleted++;
+  state.stats.totalEarned += p.job.payout;
+  log(`Доставил заказ, получил ${p.job.payout} ₽`);
+  p.job = null;
 }
 
 function takeJob(jobId) {
@@ -991,13 +1052,37 @@ function renderPointPanel() {
   }
 }
 
+let lastJobPanelSignature = null;
 function renderCurrentJobPanel() {
   const box = el('current-job-panel');
-  const job = state.player.job;
+  const p = state.player;
+  const job = p.job;
+  const signature = job ? `${job.id}|${job.pickedUp}|${p.status}|${p.positionId}` : 'hidden';
+  if (signature === lastJobPanelSignature) return;
+  lastJobPanelSignature = signature;
+
   if (!job) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   box.classList.remove('hidden');
+  box.innerHTML = '';
+
+  const text = document.createElement('div');
   const status = job.pickedUp ? 'везёшь' : 'нужно забрать';
-  box.textContent = `Заказ: ${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.payout} ₽ (${status})`;
+  text.textContent = `Заказ: ${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.payout} ₽ (${status})`;
+  box.appendChild(text);
+
+  const btn = document.createElement('button');
+  if (!job.pickedUp) {
+    const canPickup = p.status === 'idle' && p.positionId === job.fromId;
+    btn.textContent = canPickup ? '📦 Забрать заказ' : `📦 Забрать заказ (нужно доехать до «${pointById(job.fromId).name}»)`;
+    btn.disabled = !canPickup;
+    btn.onclick = () => { pickUpJob(); renderAll(); };
+  } else {
+    const canDeliver = p.status === 'idle' && p.positionId === job.toId;
+    btn.textContent = canDeliver ? '✅ Сдать заказ' : `✅ Сдать заказ (нужно доехать до «${pointById(job.toId).name}»)`;
+    btn.disabled = !canDeliver;
+    btn.onclick = () => { deliverJob(); renderAll(); };
+  }
+  box.appendChild(btn);
 }
 
 let lastJobsSignature = null;
@@ -1197,6 +1282,7 @@ function showGameScreen() {
   lastJobsSignature = null;
   lastActionsSignature = null;
   lastPointPanelSignature = null;
+  lastJobPanelSignature = null;
   uiSelectedPointId = null;
   mapView = 'city';
   mapCityId = 'rivnoe';
