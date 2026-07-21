@@ -601,6 +601,12 @@ function equipmentLabelFor(storage) {
 function cargoWeightKg() { return state.player.jobs.filter(j => j.pickedUp).reduce((s, j) => s + j.weightKg, 0); }
 function cargoVolumeL() { return state.player.jobs.filter(j => j.pickedUp).reduce((s, j) => s + j.volumeL, 0); }
 
+function formatVolumeM3(liters) {
+  const m3 = liters / 1000;
+  const precision = m3 >= 10 ? 1 : m3 >= 1 ? 2 : m3 >= 0.01 ? 3 : 4;
+  return `${parseFloat(m3.toFixed(precision))} м³`;
+}
+
 // ---------- jobs: generation, taking, pickup, delivery ----------
 
 function pickJobEndpoints() {
@@ -1057,6 +1063,7 @@ function workshopRepair() {
 function workshopUpgrade() {
   const p = state.player;
   if (p.status !== 'idle' || pointById(p.positionId).type !== 'workshop') return;
+  if (vehicleSpec().cat === 'foot') { toast('У пешехода нет подвески — укреплять нечего'); return; }
   if (p.vehicle.upgraded || state.money < UPGRADE_COST) return;
   state.money -= UPGRADE_COST;
   p.vehicle.upgraded = true;
@@ -1745,7 +1752,7 @@ function renderCargoPanel() {
   caps.innerHTML = `
     <div class="cargo-cap-row"><span>Вес ${cargoWeightKg().toFixed(1)}/${spec.kg} кг</span></div>
     <div class="cargo-cap-row"><div class="vital-track"><div class="vital-fill" style="width:${weightPct}%;background:linear-gradient(to right,#a3700e,#e2a63b)"></div></div></div>
-    <div class="cargo-cap-row"><span>Объём ${Math.round(cargoVolumeL())}/${spec.l} л</span></div>
+    <div class="cargo-cap-row"><span>Объём ${formatVolumeM3(cargoVolumeL())} / ${formatVolumeM3(spec.l)}</span></div>
     <div class="cargo-cap-row"><div class="vital-track"><div class="vital-fill" style="width:${volPct}%;background:linear-gradient(to right,#2a6690,#4a9dd1)"></div></div></div>`;
   box.appendChild(caps);
 
@@ -1773,7 +1780,7 @@ function renderCargoPanel() {
     name.innerHTML = `${job.itemName}<div class="job-sub">${statusText}</div>${hintText}`;
     const meta = document.createElement('div');
     meta.className = 'cargo-chip-meta';
-    meta.textContent = `${job.weightKg}кг/${job.volumeL}л`;
+    meta.textContent = `${job.weightKg}кг/${formatVolumeM3(job.volumeL)}`;
     const btn = document.createElement('button');
     if (!job.pickedUp) {
       const canPickup = p.status === 'idle' && p.positionId === job.fromId;
@@ -1847,7 +1854,7 @@ function renderOrdersList() {
     li.className = fits ? 'job-fit' : 'job-nofit';
     const info = document.createElement('div');
     info.className = 'job-info';
-    info.innerHTML = `<div>${STORAGE_GLYPH[job.storage]} <b>${job.itemName}</b> — ${job.weightKg} кг / ${job.volumeL} л</div>` +
+    info.innerHTML = `<div>${STORAGE_GLYPH[job.storage]} <b>${job.itemName}</b> — ${job.weightKg} кг / ${formatVolumeM3(job.volumeL)}</div>` +
       `<div class="job-sub">${pointById(job.fromId).name} → ${pointById(job.toId).name} · ${job.distanceKm} км</div>` +
       `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!fits ? ' · не подходит' : ''}</div>`;
     const pay = document.createElement('span');
@@ -1987,7 +1994,7 @@ function openShop() {
         const owned = state.player.vehicles.some(veh => veh.type === v.id);
         const info = document.createElement('div');
         const fuelTxt = v.fuel === 'legs' ? '' : ` · бак ${v.tank} км`;
-        info.innerHTML = `<b>${v.name}</b><div class="job-sub">${v.speed} км/ч · до ${v.trip} км за раз${fuelTxt} · ${v.kg} кг / ${v.l} л${v.fridge ? ' · встроенный холод' : ''}</div>`;
+        info.innerHTML = `<b>${v.name}</b><div class="job-sub">${v.speed} км/ч · до ${v.trip} км за раз${fuelTxt} · ${v.kg} кг / ${formatVolumeM3(v.l)}${v.fridge ? ' · встроенный холод' : ''}</div>`;
         const btn = document.createElement('button');
         btn.textContent = owned ? 'В гараже' : (v.price === 0 ? 'Взять' : `Купить — ${v.price.toLocaleString('ru-RU')} ₽`);
         btn.disabled = owned || state.money < v.price;
@@ -2017,10 +2024,13 @@ function openWorkshop() {
   el('workshop-condition').textContent = `Состояние техники: ${Math.round(state.player.vehicle.condition)}%`;
   el('btn-workshop-repair').textContent = `Полный ремонт — ${WORKSHOP_REPAIR_COST} ₽`;
   el('btn-workshop-repair').disabled = state.money < WORKSHOP_REPAIR_COST;
+  const isFoot = vehicleSpec().cat === 'foot';
   const upgraded = state.player.vehicle.upgraded;
   el('btn-workshop-upgrade').textContent = `Укрепить подвеску — ${UPGRADE_COST} ₽`;
-  el('btn-workshop-upgrade').disabled = upgraded || state.money < UPGRADE_COST;
-  el('workshop-upgrade-hint').textContent = upgraded ? 'Подвеска уже укреплена' : 'Снижает шанс серьёзных поломок';
+  el('btn-workshop-upgrade').disabled = isFoot || upgraded || state.money < UPGRADE_COST;
+  el('workshop-upgrade-hint').textContent = isFoot
+    ? 'У пешехода нет подвески — недоступно'
+    : (upgraded ? 'Подвеска уже укреплена' : 'Снижает шанс серьёзных поломок');
   el('workshop-modal').classList.remove('hidden');
 }
 
@@ -2067,7 +2077,7 @@ function renderGarageList(box) {
     const info = document.createElement('div');
     info.className = 'garage-info';
     const fuelTxt = spec.fuel === 'legs' ? '' : ` · топливо ${Math.round(veh.fuel)}/${spec.tank} км`;
-    info.innerHTML = `${isActive ? '<span class="garage-badge">За рулём</span><br>' : ''}<b>${spec.name}</b><div class="garage-sub">Состояние: ${Math.round(veh.condition)}%${fuelTxt}</div>`;
+    info.innerHTML = `${isActive ? '<span class="garage-badge">Используется</span><br>' : ''}<b>${spec.name}</b><div class="garage-sub">Состояние: ${Math.round(veh.condition)}%${fuelTxt}</div>`;
     li.append(icon, info);
     li.onclick = () => { garageView = { mode: 'detail', type: veh.type }; renderGarageContent(); };
     list.appendChild(li);
@@ -2093,7 +2103,7 @@ function renderGarageDetail(box, vehicleType) {
 
   const header = document.createElement('div');
   header.className = 'garage-detail-header';
-  header.innerHTML = `<div class="garage-icon">${CAT_GLYPH[spec.cat]}</div><div><b>${spec.name}</b><div class="garage-sub">${CAT_LABEL[spec.cat]}${isActive ? ' · за рулём сейчас' : ''}</div></div>`;
+  header.innerHTML = `<div class="garage-icon">${CAT_GLYPH[spec.cat]}</div><div><b>${spec.name}</b><div class="garage-sub">${CAT_LABEL[spec.cat]}${isActive ? ' · используется сейчас' : ''}</div></div>`;
   wrap.appendChild(header);
 
   const grid = document.createElement('div');
@@ -2101,14 +2111,15 @@ function renderGarageDetail(box, vehicleType) {
   const fuelRow = spec.fuel === 'legs'
     ? '<div><span>Топливо</span>не требуется</div>'
     : `<div><span>Запас хода</span>${Math.round(veh.fuel)}/${spec.tank} км</div>`;
+  const suspensionRow = spec.cat === 'foot' ? '' : `<div><span>Подвеска</span>${veh.upgraded ? 'укреплена' : 'обычная'}</div>`;
   grid.innerHTML = `
     <div><span>Состояние</span>${Math.round(veh.condition)}% (${conditionLabel(veh.condition)})</div>
     <div><span>Скорость</span>${spec.speed} км/ч</div>
     <div><span>Грузоподъёмность</span>${spec.kg} кг</div>
-    <div><span>Объём кузова</span>${spec.l} л</div>
+    <div><span>Объём груза</span>${formatVolumeM3(spec.l)}</div>
     <div><span>Макс. рейс без остановки</span>${spec.trip} км</div>
     ${fuelRow}
-    <div><span>Подвеска</span>${veh.upgraded ? 'укреплена' : 'обычная'}</div>
+    ${suspensionRow}
     <div><span>Утомляемость</span>${spec.fat.toFixed(2)}/км</div>
   `;
   wrap.appendChild(grid);
@@ -2121,7 +2132,7 @@ function renderGarageDetail(box, vehicleType) {
   const actions = document.createElement('div');
   actions.className = 'garage-detail-actions';
   const switchBtn = document.createElement('button');
-  switchBtn.textContent = isActive ? 'Уже за рулём' : '🔁 Пересесть';
+  switchBtn.textContent = isActive ? 'Уже используется' : '🔁 Пересесть';
   switchBtn.disabled = isActive || state.player.status !== 'idle';
   switchBtn.onclick = () => { switchVehicle(vehicleType); renderGarageContent(); renderAll(); };
   actions.appendChild(switchBtn);
@@ -2140,7 +2151,7 @@ function renderGarageDetail(box, vehicleType) {
     const sellBtn = document.createElement('button');
     const resaleVal = vehicleResaleValue(veh);
     sellBtn.className = 'danger-action';
-    sellBtn.textContent = isActive ? 'Нельзя продать (за рулём)' : `💰 Продать технику — ${resaleVal.toLocaleString('ru-RU')} ₽`;
+    sellBtn.textContent = isActive ? 'Нельзя продать (используется)' : `💰 Продать технику — ${resaleVal.toLocaleString('ru-RU')} ₽`;
     sellBtn.disabled = isActive || state.player.status !== 'idle';
     sellBtn.onclick = () => {
       sellVehicle(vehicleType);
