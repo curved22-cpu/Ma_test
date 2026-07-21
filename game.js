@@ -785,6 +785,7 @@ function newGameState() {
     money: START_MONEY,
     gameTime: 0,
     lastRealTimestamp: Date.now(),
+    autoPlay: true, // when off, time simply doesn't pass while the game is closed
     gameOver: null, // null | 'bankruptcy'
     player: {
       positionId: 'rivnoe:home',
@@ -852,6 +853,7 @@ function initDailyEconomy() {
 function migrateEconomyFields() {
   if (typeof state.lastProcessedDay !== 'number') state.lastProcessedDay = dayIndexFromGameTime(state.gameTime);
   if (!state.dailyExpense) rollDailyExpense();
+  if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
 }
 
 function log(text, opts) {
@@ -1647,6 +1649,9 @@ const HUNGER_RATE_STUCK = 0.06;
 
 function runOfflineCatchup() {
   const now = Date.now();
+  // Manually paused: time simply doesn't pass while the game is closed —
+  // resume exactly where things were left off, no catch-up simulation at all.
+  if (!state.autoPlay) { state.lastRealTimestamp = now; return null; }
   let elapsedMs = now - state.lastRealTimestamp;
   if (elapsedMs <= 0) { state.lastRealTimestamp = now; return null; }
   if (elapsedMs > MAX_OFFLINE_MS) elapsedMs = MAX_OFFLINE_MS;
@@ -2861,7 +2866,17 @@ function showGameScreen() {
   uiSelectedPointId = null;
   centerOnPlayer(false);
   toasts = [];
+  renderAutoplayToggle();
   requestAnimationFrame(frame);
+}
+
+function renderAutoplayToggle() {
+  const btn = el('btn-autoplay-toggle');
+  btn.classList.toggle('autoplay-on', state.autoPlay);
+  btn.classList.toggle('autoplay-off', !state.autoPlay);
+  btn.title = state.autoPlay
+    ? 'Игра продолжит идти, пока закрыта. Нажми, чтобы поставить на паузу'
+    : 'На паузе — время не идёт, пока тебя нет. Нажми, чтобы снова разрешить игре идти';
 }
 
 function showMenuScreen() {
@@ -2968,6 +2983,12 @@ el('import-file').onchange = (e) => {
 };
 
 el('btn-center-me').onclick = () => { centerOnPlayer(true); };
+
+el('btn-autoplay-toggle').onclick = () => {
+  state.autoPlay = !state.autoPlay;
+  renderAutoplayToggle();
+  saveGame();
+};
 
 el('btn-open-menu').onclick = () => el('menu-modal').classList.remove('hidden');
 el('btn-menu-close').onclick = () => el('menu-modal').classList.add('hidden');

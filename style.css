@@ -32,6 +32,15 @@ button:active { background: #2c3542; }
 button:disabled { opacity: 0.4; cursor: default; }
 
 .icon-btn { padding: 8px 10px; font-size: 1.2rem; line-height: 1; }
+.autoplay-toggle { display: flex; align-items: center; justify-content: center; padding: 8px; }
+.autoplay-dot {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  display: block;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.autoplay-on .autoplay-dot { background: #4cd672; box-shadow: 0 0 6px rgba(76,214,114,0.7); }
+.autoplay-off .autoplay-dot { background: #d64545; box-shadow: 0 0 6px rgba(214,69,69,0.7); }
 
 /* ---------- game layout (vertical/portrait for now — landscape mode comes later) ---------- */
 
