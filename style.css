@@ -246,8 +246,11 @@ html, body { height: 100%; margin: 0; }
 .garage-detail-actions { display: flex; flex-direction: column; gap: 8px; }
 .garage-back-btn { background: none; border: none; color: #7fa1c9; padding: 4px 0; margin-bottom: 8px; width: auto; font-size: 0.85rem; text-align: left; }
 .garage-detail-actions .secondary-action { background: #3a4a3a; }
-.garage-detail-actions .danger-action { background: #4a2f2f; }
-.garage-detail-actions .danger-action:not(:disabled):hover { background: #5c3838; }
+.danger-action { background: #4a2f2f; }
+.danger-action:not(:disabled):hover { background: #5c3838; }
+.refuse-hint { font-weight: 600; }
+.refuse-hint-warn { color: #e2b23b; }
+.refuse-hint-danger { color: #d1574a; }
 
 .orders-box { max-width: 460px; }
 .orders-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }

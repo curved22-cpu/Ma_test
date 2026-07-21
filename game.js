@@ -24,6 +24,8 @@ const VEHICLE_UPKEEP_RATE = 0.00015; // fraction of vehicle price, per day
 const BANKRUPTCY_DEBT_LIMIT = -3000;
 const LATE_PENALTY_PER_DAY = 0.10; // fraction of payout lost per full day late
 const LATE_PENALTY_MAX = 0.9; // never lose more than 90% of the payout
+const REFUSE_PENALTY_SAME_LOCATION = 0.5; // returned right back where it was picked up
+const REFUSE_PENALTY_OTHER_LOCATION = 0.7; // dumped anywhere else
 const START_MONEY = 500;
 
 function rand(min, max) { return min + Math.random() * (max - min); }
@@ -716,6 +718,36 @@ function deliverJob(jobId) {
   } else {
     log(`Доставил «${job.itemName}», получил ${actualPayout} ₽`);
   }
+}
+
+function refuseJobPenaltyFrac(job) {
+  return state.player.positionId === job.fromId ? REFUSE_PENALTY_SAME_LOCATION : REFUSE_PENALTY_OTHER_LOCATION;
+}
+
+function refuseJob(jobId) {
+  const p = state.player;
+  const job = p.jobs.find(j => j.id === jobId && j.pickedUp);
+  if (!job) return;
+  if (p.status !== 'idle') { toast('Отказаться можно, только когда стоишь на месте'); return; }
+  const penaltyFrac = refuseJobPenaltyFrac(job);
+  const penalty = Math.round(job.payout * penaltyFrac);
+  state.money -= penalty;
+  p.jobs = p.jobs.filter(j => j.id !== jobId);
+  const sameSpot = p.positionId === job.fromId;
+  log(`Отказался от «${job.itemName}» ${sameSpot ? 'там же, где забрал' : 'не в том месте'} — неустойка ${penalty} ₽`);
+}
+
+let pendingRefuseJobId = null;
+function openRefuseConfirm(jobId) {
+  const job = state.player.jobs.find(j => j.id === jobId && j.pickedUp);
+  if (!job) return;
+  pendingRefuseJobId = jobId;
+  const penaltyFrac = refuseJobPenaltyFrac(job);
+  const penalty = Math.round(job.payout * penaltyFrac);
+  const sameSpot = state.player.positionId === job.fromId;
+  const placeText = sameSpot ? `там же, где забрал (${pointById(job.fromId).name})` : `не в том месте (${pointById(state.player.positionId).name})`;
+  el('refuse-text').textContent = `Если отказаться от «${job.itemName}» ${placeText}, спишется неустойка ${penalty} ₽ (${Math.round(penaltyFrac * 100)}% от вознаграждения ${job.payout} ₽).`;
+  el('refuse-modal').classList.remove('hidden');
 }
 
 // ---------- rest / eat (available at any point; sleeping needs an actual home) ----------
@@ -1743,7 +1775,15 @@ function renderCargoPanel() {
     const name = document.createElement('div');
     name.className = 'cargo-chip-name';
     const statusText = job.pickedUp ? `→ ${pointById(job.toId).name}` : `забрать: ${pointById(job.fromId).name}`;
-    name.innerHTML = `${job.itemName}<div class="job-sub">${statusText}</div>`;
+    let hintText = '';
+    if (job.pickedUp && p.positionId !== job.toId) {
+      if (p.positionId === job.fromId) {
+        hintText = `<div class="job-sub refuse-hint refuse-hint-warn">Здесь можно вернуть груз (-${Math.round(REFUSE_PENALTY_SAME_LOCATION * 100)}%)</div>`;
+      } else {
+        hintText = `<div class="job-sub refuse-hint refuse-hint-danger">Здесь не то место — отказ обойдётся в -${Math.round(REFUSE_PENALTY_OTHER_LOCATION * 100)}%</div>`;
+      }
+    }
+    name.innerHTML = `${job.itemName}<div class="job-sub">${statusText}</div>${hintText}`;
     const meta = document.createElement('div');
     meta.className = 'cargo-chip-meta';
     meta.textContent = `${job.weightKg}кг/${job.volumeL}л`;
@@ -1753,13 +1793,23 @@ function renderCargoPanel() {
       btn.textContent = '📦 Забрать';
       btn.disabled = !canPickup;
       btn.onclick = () => { pickUpJob(job.id); renderAll(); };
+      chip.append(glyph, name, meta, btn);
     } else {
       const canDeliver = p.status === 'idle' && p.positionId === job.toId;
       btn.textContent = '✅ Сдать';
       btn.disabled = !canDeliver;
       btn.onclick = () => { deliverJob(job.id); renderAll(); };
+      chip.append(glyph, name, meta, btn);
+      if (p.positionId !== job.toId) {
+        const refuseBtn = document.createElement('button');
+        refuseBtn.className = 'danger-action';
+        const penaltyPct = Math.round(refuseJobPenaltyFrac(job) * 100);
+        refuseBtn.textContent = `❌ Отказаться (-${penaltyPct}%)`;
+        refuseBtn.disabled = p.status !== 'idle';
+        refuseBtn.onclick = () => openRefuseConfirm(job.id);
+        chip.appendChild(refuseBtn);
+      }
     }
-    chip.append(glyph, name, meta, btn);
     grid.appendChild(chip);
   });
   box.appendChild(grid);
@@ -2255,6 +2305,14 @@ el('filter-fits-only').onchange = (e) => { orderFilters.fitsOnly = e.target.chec
 
 el('btn-open-garage').onclick = () => openGarage();
 el('btn-garage-close').onclick = () => el('garage-modal').classList.add('hidden');
+
+el('btn-refuse-confirm').onclick = () => {
+  if (pendingRefuseJobId !== null) refuseJob(pendingRefuseJobId);
+  pendingRefuseJobId = null;
+  el('refuse-modal').classList.add('hidden');
+  renderAll();
+};
+el('btn-refuse-cancel').onclick = () => { pendingRefuseJobId = null; el('refuse-modal').classList.add('hidden'); };
 
 el('btn-shop-close').onclick = () => el('shop-modal').classList.add('hidden');
 el('shop-tab-vehicles').onclick = () => { shopTab = 'vehicles'; openShop(); };
