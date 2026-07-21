@@ -22,6 +22,8 @@ const MAX_PENDING_JOBS = 3;
 const LIVING_COST_PER_DAY = 150;   // food/rent regardless of activity
 const VEHICLE_UPKEEP_RATE = 0.00015; // fraction of vehicle price, per day
 const BANKRUPTCY_DEBT_LIMIT = -3000;
+const LATE_PENALTY_PER_DAY = 0.10; // fraction of payout lost per full day late
+const LATE_PENALTY_MAX = 0.9; // never lose more than 90% of the payout
 const START_MONEY = 500;
 
 function rand(min, max) { return min + Math.random() * (max - min); }
@@ -690,16 +692,30 @@ function pickUpJob(jobId) {
   log(`Забрал заказ: ${job.itemName} → ${pointById(job.toId).name}`);
 }
 
+function lateDeliveryPenaltyFrac(job) {
+  if (!job.deadlineReal) return 0;
+  const msLate = Date.now() - job.deadlineReal;
+  if (msLate <= 0) return 0;
+  const daysLate = msLate / (24 * 60 * 60 * 1000);
+  return clamp(daysLate * LATE_PENALTY_PER_DAY, 0, LATE_PENALTY_MAX);
+}
+
 function deliverJob(jobId) {
   const p = state.player;
   const job = p.jobs.find(j => j.id === jobId && j.pickedUp);
   if (!job) return;
   if (p.status !== 'idle' || p.positionId !== job.toId) return;
-  state.money += job.payout;
+  const penaltyFrac = lateDeliveryPenaltyFrac(job);
+  const actualPayout = Math.round(job.payout * (1 - penaltyFrac));
+  state.money += actualPayout;
   state.stats.jobsCompleted++;
-  state.stats.totalEarned += job.payout;
+  state.stats.totalEarned += actualPayout;
   p.jobs = p.jobs.filter(j => j.id !== jobId);
-  log(`Доставил «${job.itemName}», получил ${job.payout} ₽`);
+  if (penaltyFrac > 0) {
+    log(`Доставил «${job.itemName}» с опозданием (-${Math.round(penaltyFrac * 100)}%), получил ${actualPayout} ₽ вместо ${job.payout} ₽`);
+  } else {
+    log(`Доставил «${job.itemName}», получил ${actualPayout} ₽`);
+  }
 }
 
 // ---------- rest / eat (available at any point; sleeping needs an actual home) ----------
@@ -1369,7 +1385,7 @@ function centerOnPlayer(animated) {
     targetX = meta.x; targetY = meta.y;
   }
   if (!animated) { camera.x = targetX; camera.y = targetY; camera.zoom = targetZoom; cameraTween = null; return; }
-  cameraTween = { fromX: camera.x, fromY: camera.y, fromZoom: camera.zoom, toX: targetX, toY: targetY, toZoom: targetZoom, start: performance.now(), duration: 650 };
+  cameraTween = { fromX: camera.x, fromY: camera.y, fromZoom: camera.zoom, toX: targetX, toY: targetY, toZoom: targetZoom, start: performance.now(), duration: 3250 };
 }
 
 function zoomToCity(cityId) {
