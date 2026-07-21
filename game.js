@@ -14,6 +14,10 @@ const NIGHT_SPEED_MULT = 0.7;
 const WEAR_PER_KM = 0.5;
 const WORKSHOP_REPAIR_COST = 600;
 const UPGRADE_COST = 4000;
+const VEHICLE_RESALE_MAX_RATE = 0.55; // resale share of price at 100% condition
+const VEHICLE_RESALE_MIN_RATE = 0.15; // resale share of price at 0% condition (still has scrap/parts value)
+const VEHICLE_RESALE_UPGRADE_BONUS_RATE = 0.5; // upgraded suspension adds this share of UPGRADE_COST to resale value
+const UPGRADE_RESALE_RATE = 0.5; // selling just the upgrade refunds half of UPGRADE_COST
 const MAX_PENDING_JOBS = 3;
 const LIVING_COST_PER_DAY = 150;   // food/rent regardless of activity
 const VEHICLE_UPKEEP_RATE = 0.00015; // fraction of vehicle price, per day
@@ -956,6 +960,41 @@ function switchVehicle(vehicleType) {
   if (cargoWeightKg() > spec.kg || cargoVolumeL() > spec.l) { toast('Текущий груз не влезет в эту технику'); return; }
   p.vehicle = target;
   log(`Пересел на: ${spec.name}`, { silent: true });
+}
+
+function vehicleResaleValue(veh) {
+  const spec = VEHICLE_BY_ID[veh.type];
+  if (!spec || spec.price === 0) return 0;
+  const condFrac = clamp(veh.condition, 0, 100) / 100;
+  const rate = VEHICLE_RESALE_MIN_RATE + (VEHICLE_RESALE_MAX_RATE - VEHICLE_RESALE_MIN_RATE) * condFrac;
+  let value = spec.price * rate;
+  if (veh.upgraded) value += UPGRADE_COST * VEHICLE_RESALE_UPGRADE_BONUS_RATE;
+  return Math.round(value / 10) * 10;
+}
+
+function sellVehicle(vehicleType) {
+  const p = state.player;
+  const spec = VEHICLE_BY_ID[vehicleType];
+  const veh = p.vehicles.find(v => v.type === vehicleType);
+  if (!spec || !veh || spec.price === 0) { toast('Эту технику продать нельзя'); return; }
+  if (p.status !== 'idle') { toast('Продавать можно, только когда стоишь на месте'); return; }
+  if (p.vehicle.type === vehicleType) { toast('Сначала пересядь на другую технику'); return; }
+  const value = vehicleResaleValue(veh);
+  p.vehicles = p.vehicles.filter(v => v.type !== vehicleType);
+  state.money += value;
+  log(`Продал технику: ${spec.name} за ${value.toLocaleString('ru-RU')} ₽`);
+}
+
+function sellVehicleUpgrade(vehicleType) {
+  const p = state.player;
+  const spec = VEHICLE_BY_ID[vehicleType];
+  const veh = p.vehicles.find(v => v.type === vehicleType);
+  if (!spec || !veh || !veh.upgraded) return;
+  if (p.status !== 'idle') { toast('Продавать можно, только когда стоишь на месте'); return; }
+  const refund = Math.round(UPGRADE_COST * UPGRADE_RESALE_RATE / 10) * 10;
+  veh.upgraded = false;
+  state.money += refund;
+  log(`Продал улучшение подвески (${spec.name}) за ${refund.toLocaleString('ru-RU')} ₽`);
 }
 
 function workshopRepair() {
@@ -2033,6 +2072,32 @@ function renderGarageDetail(box, vehicleType) {
   switchBtn.disabled = isActive || state.player.status !== 'idle';
   switchBtn.onclick = () => { switchVehicle(vehicleType); renderGarageContent(); renderAll(); };
   actions.appendChild(switchBtn);
+
+  if (veh.upgraded) {
+    const sellUpgradeBtn = document.createElement('button');
+    const upgradeRefund = Math.round(UPGRADE_COST * UPGRADE_RESALE_RATE / 10) * 10;
+    sellUpgradeBtn.className = 'secondary-action';
+    sellUpgradeBtn.textContent = `🔧 Продать улучшение подвески — ${upgradeRefund.toLocaleString('ru-RU')} ₽`;
+    sellUpgradeBtn.disabled = state.player.status !== 'idle';
+    sellUpgradeBtn.onclick = () => { sellVehicleUpgrade(vehicleType); renderGarageContent(); renderAll(); };
+    actions.appendChild(sellUpgradeBtn);
+  }
+
+  if (spec.price > 0) {
+    const sellBtn = document.createElement('button');
+    const resaleVal = vehicleResaleValue(veh);
+    sellBtn.className = 'danger-action';
+    sellBtn.textContent = isActive ? 'Нельзя продать (за рулём)' : `💰 Продать технику — ${resaleVal.toLocaleString('ru-RU')} ₽`;
+    sellBtn.disabled = isActive || state.player.status !== 'idle';
+    sellBtn.onclick = () => {
+      sellVehicle(vehicleType);
+      garageView = { mode: 'list' };
+      renderGarageContent();
+      renderAll();
+    };
+    actions.appendChild(sellBtn);
+  }
+
   wrap.appendChild(actions);
 
   box.appendChild(wrap);
