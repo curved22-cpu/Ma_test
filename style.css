@@ -127,6 +127,7 @@ html, body { height: 100%; margin: 0; }
 .vital-fill { height: 100%; width: 0%; transition: width 0.3s; }
 .vital-fill.fatigue { background: linear-gradient(to right, #a3700e, #e2a63b); }
 .vital-fill.hunger { background: linear-gradient(to right, #9c2c21, #d9534f); }
+.vital-fill.sleepiness { background: linear-gradient(to right, #3d2f7a, #8a63c9); }
 
 .hud-icon-buttons { display: flex; gap: 6px; }
 

@@ -14,6 +14,18 @@ const NIGHT_END_MIN = 6 * 60;
 const NIGHT_SPEED_MULT = 0.7;
 const WEAR_PER_KM = 0.5;
 const ENDURE_FATIGUE_MULT = 3; // fatigue drains 3x while "enduring" hunger with no money for food
+// Sleepiness is the real need for sleep — unlike fatigue (physical exertion, topped
+// up anywhere by a quick roadside rest), it only climbs down from actual sleep at
+// home (or paid lodging), so endlessly patching fatigue on the roadside can't
+// substitute for real sleep forever.
+const SLEEPINESS_RATE = 0.055; // per game-minute, in any status except real sleep
+const SLEEPY_WARN_THRESHOLD = 80;
+const SLEEPY_SPEED_THRESHOLD = 90; // drowsy travel kicks in past this
+const SLEEPY_SPEED_MULT = 0.6;
+const SLEEPY_BREAKDOWN_BONUS = 0.05; // extra breakdown chance while very sleepy (drowsy mishaps)
+const SLEEPY_COLLAPSE_RESET = 30; // sleepiness left after an involuntary collapse
+const SLEEPY_COLLAPSE_FATIGUE_RELIEF = 40;
+const SLEEPY_COLLAPSE_TRIP_PENALTY = 1.15; // lost time/distance from passing out mid-trip
 // Breakdown chance per trip scales with wear: worn-out technique is much more likely
 // to act up, which is the whole point — it rewards keeping condition/suspension up.
 const BREAKDOWN_BASE_CHANCE = 0.02; // at perfect (100%) condition
@@ -774,7 +786,7 @@ function offlineAutoSleep() {
   const opt = SLEEP_OPTIONS.find(o => o.id === 'sleep8');
   p.status = 'resting';
   p.restElapsed = 0;
-  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, label: opt.label };
+  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label };
   if (offlineAutoTally) { offlineAutoTally.sleeps++; offlineAutoTally.sleepSpent += cost; }
   log(isHome ? 'Поспал дома (авто, пока был офлайн)' : `Переночевал не дома — ${cost} ₽ (авто, офлайн)`, { silent: true });
 }
@@ -793,6 +805,7 @@ function newGameState() {
       activity: null,
       fatigue: 15,
       hunger: 15,
+      sleepiness: 15,
       vehicles: [startingVehicle], // every owned vehicle instance; .vehicle below is always one of these (same reference)
       vehicle: startingVehicle,
       restElapsed: 0,
@@ -803,6 +816,7 @@ function newGameState() {
       equipment: {},
       warnedHunger: false,
       warnedFatigue: false,
+      warnedSleepy: false,
       warnedDebt: false,
       offeredFoodDelivery: false,
       enduring: false,
@@ -854,6 +868,8 @@ function migrateEconomyFields() {
   if (typeof state.lastProcessedDay !== 'number') state.lastProcessedDay = dayIndexFromGameTime(state.gameTime);
   if (!state.dailyExpense) rollDailyExpense();
   if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
+  if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
+  if (typeof state.player.warnedSleepy !== 'boolean') state.player.warnedSleepy = false;
 }
 
 function log(text, opts) {
@@ -1168,10 +1184,12 @@ function startEnduring() {
   state.player.enduring = true;
   log('Решил перетерпеть голод — силы теперь тают втрое быстрее, пока не поест', { silent: true });
 }
+// Real sleep is the only thing that relieves sleepiness (see sleepinessRelief) —
+// a quick roadside/idle rest below only patches fatigue, on purpose.
 const SLEEP_OPTIONS = [
-  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30 },
-  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, fatigueRelief: 70 },
-  { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, fatigueRelief: 100 },
+  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30, sleepinessRelief: 25, isSleep: true },
+  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, fatigueRelief: 70, sleepinessRelief: 65, isSleep: true },
+  { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, fatigueRelief: 100, sleepinessRelief: 100, isSleep: true },
 ];
 const IDLE_REST_OPTION = { id: 'breathe', label: 'Просто отдохнуть, не ложась', minutes: 20, fatigueRelief: 10 };
 // Cutting rest/food short only credits a fraction of the elapsed time's benefit,
@@ -1186,6 +1204,10 @@ function cancelCurrentAction() {
     if (fraction > 0) {
       const relief = Math.round(p.restPlan.fatigueRelief * fraction * INTERRUPT_PENALTY_FACTOR);
       p.fatigue = clamp(p.fatigue - relief, 0, 100);
+      if (p.restPlan.isSleep) {
+        const sleepRelief = Math.round((p.restPlan.sleepinessRelief || 0) * fraction * INTERRUPT_PENALTY_FACTOR);
+        p.sleepiness = clamp(p.sleepiness - sleepRelief, 0, 100);
+      }
       log(`Прервал отдых (${p.restPlan.label}), не доспал — восстановил ${relief} энергии из ${p.restPlan.fatigueRelief}`, { silent: true });
     }
     p.status = 'idle'; p.restPlan = null; p.restElapsed = 0;
@@ -1224,7 +1246,7 @@ function startSleeping(optionId) {
   const opt = SLEEP_OPTIONS.find(o => o.id === optionId);
   p.status = 'resting';
   p.restElapsed = 0;
-  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, label: opt.label };
+  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label };
   log(`Лёг спать дома: ${opt.label}`, { silent: true });
 }
 
@@ -1349,7 +1371,8 @@ function onArrive(targetId) {
 
 function breakdownOccurrenceChance() {
   const conditionFactor = (100 - state.player.vehicle.condition) / 100;
-  return BREAKDOWN_BASE_CHANCE + conditionFactor * BREAKDOWN_WEAR_BONUS;
+  const sleepyBonus = state.player.sleepiness >= SLEEPY_SPEED_THRESHOLD ? SLEEPY_BREAKDOWN_BONUS : 0;
+  return BREAKDOWN_BASE_CHANCE + conditionFactor * BREAKDOWN_WEAR_BONUS + sleepyBonus;
 }
 
 function triggerBreakdown(activity) {
@@ -1426,9 +1449,10 @@ function resolvePendingAction(actionId, choice) {
       orderFoodDelivery();
       log('Заказал доставку еды на обочину, пока стоял без сил', { silent: true });
     } else {
-      // Roadside rest only relieves fatigue a little — it does NOT feed the courier.
+      // Roadside rest only relieves fatigue a little — it does NOT feed the courier
+      // and does nothing for real sleepiness, which keeps climbing regardless.
       state.player.fatigue = 40;
-      log('Отдохнул на обочине, силы немного вернулись, но есть по-прежнему хочется');
+      log('Отдохнул на обочине, силы немного вернулись, но есть по-прежнему хочется, а в сон всё равно клонит');
     }
   }
 
@@ -1548,7 +1572,14 @@ function simulateTick(dt, summary) {
   // standing there: eats or sleeps automatically once idle and in real need.
   if (catchupBuffer && p.status === 'idle') {
     if (p.hunger >= 80) offlineAutoEat();
-    else if (p.fatigue >= 80) offlineAutoSleep();
+    else if (p.fatigue >= 80 || p.sleepiness >= 80) offlineAutoSleep();
+  }
+
+  // Sleepiness is the real need for sleep: it climbs with time no matter what the
+  // courier is doing, and only actual sleep (not a quick roadside/idle rest) brings
+  // it down — so patching fatigue alone can't substitute for sleep forever.
+  if (!(p.status === 'resting' && p.restPlan && p.restPlan.isSleep)) {
+    p.sleepiness = clamp(p.sleepiness + SLEEPINESS_RATE * dt, 0, 100);
   }
 
   if (p.status === 'moving') {
@@ -1565,7 +1596,8 @@ function simulateTick(dt, summary) {
     } else {
       const spec = vehicleSpec();
       const nightMult = isNight() ? NIGHT_SPEED_MULT : 1;
-      const effSpeed = spec.speed * nightMult;
+      const sleepyMult = p.sleepiness >= SLEEPY_SPEED_THRESHOLD ? SLEEPY_SPEED_MULT : 1;
+      const effSpeed = spec.speed * nightMult * sleepyMult;
       const kmThisTick = effSpeed * (dt / 60);
       a.traveledKm = clamp(a.traveledKm + kmThisTick, 0, a.totalKm);
       const enduranceMult = p.enduring ? ENDURE_FATIGUE_MULT : 1;
@@ -1613,6 +1645,7 @@ function simulateTick(dt, summary) {
     p.hunger = clamp(p.hunger + HUNGER_RATE_RESTING * dt, 0, 100);
     if (p.restElapsed >= p.restPlan.totalMinutes) {
       p.fatigue = clamp(p.fatigue - p.restPlan.fatigueRelief, 0, 100);
+      if (p.restPlan.isSleep) p.sleepiness = clamp(p.sleepiness - p.restPlan.sleepinessRelief, 0, 100);
       log(`Отдохнул: ${p.restPlan.label}`);
       p.status = 'idle'; p.restPlan = null;
     }
@@ -1628,10 +1661,22 @@ function simulateTick(dt, summary) {
     p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
   }
 
+  // Ignored sleepiness for too long, no matter how much fatigue was patched up
+  // along the way: the courier involuntarily collapses right where he stands.
+  if (p.sleepiness >= 100 && !(p.status === 'resting' && p.restPlan && p.restPlan.isSleep)) {
+    p.sleepiness = SLEEPY_COLLAPSE_RESET;
+    p.fatigue = clamp(p.fatigue - SLEEPY_COLLAPSE_FATIGUE_RELIEF, 0, 100);
+    if (p.status === 'moving' && p.activity) p.activity.totalKm *= SLEEPY_COLLAPSE_TRIP_PENALTY;
+    if (summary) summary.incidents++;
+    log('Вырубило от недосыпа прямо на месте — пришлось поспать там, где стоял. Так и доставку недолго сорвать.');
+  }
+
   if (p.hunger >= 90 && !p.warnedHunger) { p.warnedHunger = true; toast('Курьер сильно голоден — пора поесть'); }
   if (p.hunger < 80) { p.warnedHunger = false; p.offeredFoodDelivery = false; }
   if (p.fatigue >= 90 && !p.warnedFatigue) { p.warnedFatigue = true; toast('Курьер сильно устал — пора отдохнуть'); }
   if (p.fatigue < 80) p.warnedFatigue = false;
+  if (p.sleepiness >= SLEEPY_WARN_THRESHOLD && !p.warnedSleepy) { p.warnedSleepy = true; toast('Курьера конкретно клонит в сон — нужен настоящий сон, а не просто передышка'); }
+  if (p.sleepiness < 70) p.warnedSleepy = false;
 
   state.gameTime += dt;
   while (dayIndexFromGameTime(state.gameTime) > state.lastProcessedDay && !state.gameOver) {
@@ -2615,6 +2660,7 @@ function renderAll() {
   // fatigue/hunger (the underlying tracked values) climb toward exhausted/hungry.
   el('bar-fatigue').style.width = `${100 - state.player.fatigue}%`;
   el('bar-hunger').style.width = `${100 - state.player.hunger}%`;
+  el('bar-sleepiness').style.width = `${100 - state.player.sleepiness}%`;
   renderStatusPanel();
   renderPendingActions();
   renderPointPanel();
