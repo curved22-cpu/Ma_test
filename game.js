@@ -13,19 +13,21 @@ const NIGHT_START_MIN = 22 * 60;
 const NIGHT_END_MIN = 6 * 60;
 const NIGHT_SPEED_MULT = 0.7;
 const WEAR_PER_KM = 0.5;
-const ENDURE_FATIGUE_MULT = 3; // fatigue drains 3x while "enduring" hunger with no money for food
-// Sleepiness is the real need for sleep — unlike fatigue (physical exertion, topped
-// up anywhere by a quick roadside rest), it only climbs down from actual sleep at
-// home (or paid lodging), so endlessly patching fatigue on the roadside can't
-// substitute for real sleep forever.
-const SLEEPINESS_RATE = 0.055; // per game-minute, in any status except real sleep
+// Sleepiness is the courier's one and only tiredness stat — the real need for
+// sleep, nothing else. It fills up over 16 waking game-hours no matter what he's
+// doing, and only actual sleep brings it back down. There is no separate "energy"
+// that a quick roadside break can top up — running the tank to empty is dangerous,
+// not just inconvenient.
+const SLEEPINESS_RATE = 100 / (16 * 60); // per game-minute: empty after 16 waking hours
+const ENDURE_SLEEPINESS_MULT = 3; // sleepiness builds 3x faster while "enduring" hunger with no money for food
 const SLEEPY_WARN_THRESHOLD = 80;
-const SLEEPY_SPEED_THRESHOLD = 90; // drowsy travel kicks in past this
-const SLEEPY_SPEED_MULT = 0.6;
-const SLEEPY_BREAKDOWN_BONUS = 0.05; // extra breakdown chance while very sleepy (drowsy mishaps)
-const SLEEPY_COLLAPSE_RESET = 30; // sleepiness left after an involuntary collapse
-const SLEEPY_COLLAPSE_FATIGUE_RELIEF = 40;
-const SLEEPY_COLLAPSE_TRIP_PENALTY = 1.15; // lost time/distance from passing out mid-trip
+const SLEEPY_ACCIDENT_CHANCE = 0.6; // per tick, once totally out of sleep and still driving
+const SLEEPY_ACCIDENT_CONDITION_DAMAGE = 35;
+const SLEEPY_ACCIDENT_REPAIR_COST = 1200;
+const SLEEPY_ACCIDENT_TRIP_PENALTY = 1.2; // lost time/distance from the accident itself
+const SLEEPY_GRACE_MINUTES = 60; // adrenaline window after a scare before it can happen again
+const FOOT_COLLAPSE_MINUTES = 120; // forced roadside nap for a pedestrian who runs out of sleep
+const CARGO_MISHAP_FINE = 500; // charged only if actually carrying picked-up cargo at the time
 // Breakdown chance per trip scales with wear: worn-out technique is much more likely
 // to act up, which is the whole point — it rewards keeping condition/suspension up.
 const BREAKDOWN_BASE_CHANCE = 0.02; // at perfect (100%) condition
@@ -76,58 +78,58 @@ function pickSeeded(arr, rng) { return arr[Math.floor(rng() * arr.length)]; }
 // draw: how the animated marker is rendered — 'foot' | 'twowheel' | 'car' | 'truck'
 
 const VEHICLES = [
-  { id: 'foot', name: 'Пешком', cat: 'foot', draw: 'foot', speed: 5, price: 0, kg: 5, l: 10, fat: 3.0, trip: 8, fuel: 'legs', tank: Infinity },
+  { id: 'foot', name: 'Пешком', cat: 'foot', draw: 'foot', speed: 5, price: 0, kg: 5, l: 10, trip: 8, fuel: 'legs', tank: Infinity },
 
-  { id: 'scoot_manual1', name: 'Самокат простой', cat: 'scooter', draw: 'twowheel', speed: 10, price: 1200, kg: 3, l: 5, fat: 2.4, trip: 4, fuel: 'legs', tank: Infinity },
-  { id: 'scoot_manual2', name: 'Самокат спортивный', cat: 'scooter', draw: 'twowheel', speed: 13, price: 3200, kg: 4, l: 6, fat: 2.1, trip: 5, fuel: 'legs', tank: Infinity },
-  { id: 'scoot_e1', name: 'Электросамокат бюджетный', cat: 'scooter', draw: 'twowheel', speed: 20, price: 12000, kg: 5, l: 8, fat: 0.5, trip: 15, fuel: 'electric', tank: 20 },
-  { id: 'scoot_e2', name: 'Электросамокат городской', cat: 'scooter', draw: 'twowheel', speed: 25, price: 20000, kg: 6, l: 10, fat: 0.4, trip: 20, fuel: 'electric', tank: 30 },
-  { id: 'scoot_e3', name: 'Электросамокат мощный', cat: 'scooter', draw: 'twowheel', speed: 32, price: 35000, kg: 8, l: 12, fat: 0.35, trip: 25, fuel: 'electric', tank: 40 },
-  { id: 'scoot_e4', name: 'Электросамокат внедорожный', cat: 'scooter', draw: 'twowheel', speed: 38, price: 55000, kg: 10, l: 15, fat: 0.3, trip: 35, fuel: 'electric', tank: 50 },
+  { id: 'scoot_manual1', name: 'Самокат простой', cat: 'scooter', draw: 'twowheel', speed: 10, price: 1200, kg: 3, l: 5, trip: 4, fuel: 'legs', tank: Infinity },
+  { id: 'scoot_manual2', name: 'Самокат спортивный', cat: 'scooter', draw: 'twowheel', speed: 13, price: 3200, kg: 4, l: 6, trip: 5, fuel: 'legs', tank: Infinity },
+  { id: 'scoot_e1', name: 'Электросамокат бюджетный', cat: 'scooter', draw: 'twowheel', speed: 20, price: 12000, kg: 5, l: 8, trip: 15, fuel: 'electric', tank: 20 },
+  { id: 'scoot_e2', name: 'Электросамокат городской', cat: 'scooter', draw: 'twowheel', speed: 25, price: 20000, kg: 6, l: 10, trip: 20, fuel: 'electric', tank: 30 },
+  { id: 'scoot_e3', name: 'Электросамокат мощный', cat: 'scooter', draw: 'twowheel', speed: 32, price: 35000, kg: 8, l: 12, trip: 25, fuel: 'electric', tank: 40 },
+  { id: 'scoot_e4', name: 'Электросамокат внедорожный', cat: 'scooter', draw: 'twowheel', speed: 38, price: 55000, kg: 10, l: 15, trip: 35, fuel: 'electric', tank: 50 },
 
-  { id: 'bike_city', name: 'Городской велосипед', cat: 'bike', draw: 'twowheel', speed: 15, price: 6000, kg: 8, l: 15, fat: 1.8, trip: 12, fuel: 'legs', tank: Infinity },
-  { id: 'bike_fold', name: 'Складной велосипед', cat: 'bike', draw: 'twowheel', speed: 14, price: 8000, kg: 7, l: 12, fat: 1.9, trip: 10, fuel: 'legs', tank: Infinity },
-  { id: 'bike_road', name: 'Шоссейный велосипед', cat: 'bike', draw: 'twowheel', speed: 22, price: 15000, kg: 6, l: 10, fat: 1.6, trip: 18, fuel: 'legs', tank: Infinity },
-  { id: 'bike_cargo', name: 'Грузовой велосипед (карго-байк)', cat: 'bike', draw: 'twowheel', speed: 16, price: 25000, kg: 40, l: 80, fat: 2.0, trip: 15, fuel: 'legs', tank: Infinity },
-  { id: 'bike_e1', name: 'Электровелосипед бюджетный', cat: 'bike', draw: 'twowheel', speed: 22, price: 30000, kg: 15, l: 25, fat: 0.5, trip: 30, fuel: 'electric', tank: 40 },
-  { id: 'bike_e2', name: 'Электровелосипед городской', cat: 'bike', draw: 'twowheel', speed: 27, price: 45000, kg: 18, l: 30, fat: 0.45, trip: 40, fuel: 'electric', tank: 55 },
-  { id: 'bike_e_cargo', name: 'Электрокарго-байк', cat: 'bike', draw: 'twowheel', speed: 24, price: 70000, kg: 60, l: 120, fat: 0.5, trip: 35, fuel: 'electric', tank: 50 },
-  { id: 'bike_e3', name: 'Электровелосипед мощный', cat: 'bike', draw: 'twowheel', speed: 32, price: 95000, kg: 20, l: 35, fat: 0.4, trip: 50, fuel: 'electric', tank: 70 },
+  { id: 'bike_city', name: 'Городской велосипед', cat: 'bike', draw: 'twowheel', speed: 15, price: 6000, kg: 8, l: 15, trip: 12, fuel: 'legs', tank: Infinity },
+  { id: 'bike_fold', name: 'Складной велосипед', cat: 'bike', draw: 'twowheel', speed: 14, price: 8000, kg: 7, l: 12, trip: 10, fuel: 'legs', tank: Infinity },
+  { id: 'bike_road', name: 'Шоссейный велосипед', cat: 'bike', draw: 'twowheel', speed: 22, price: 15000, kg: 6, l: 10, trip: 18, fuel: 'legs', tank: Infinity },
+  { id: 'bike_cargo', name: 'Грузовой велосипед (карго-байк)', cat: 'bike', draw: 'twowheel', speed: 16, price: 25000, kg: 40, l: 80, trip: 15, fuel: 'legs', tank: Infinity },
+  { id: 'bike_e1', name: 'Электровелосипед бюджетный', cat: 'bike', draw: 'twowheel', speed: 22, price: 30000, kg: 15, l: 25, trip: 30, fuel: 'electric', tank: 40 },
+  { id: 'bike_e2', name: 'Электровелосипед городской', cat: 'bike', draw: 'twowheel', speed: 27, price: 45000, kg: 18, l: 30, trip: 40, fuel: 'electric', tank: 55 },
+  { id: 'bike_e_cargo', name: 'Электрокарго-байк', cat: 'bike', draw: 'twowheel', speed: 24, price: 70000, kg: 60, l: 120, trip: 35, fuel: 'electric', tank: 50 },
+  { id: 'bike_e3', name: 'Электровелосипед мощный', cat: 'bike', draw: 'twowheel', speed: 32, price: 95000, kg: 20, l: 35, trip: 50, fuel: 'electric', tank: 70 },
 
-  { id: 'moped_50', name: 'Мопед 50 куб.см', cat: 'moped', draw: 'twowheel', speed: 45, price: 60000, kg: 15, l: 25, fat: 0.35, trip: 60, fuel: 'gasoline', tank: 90 },
-  { id: 'moped_cargo', name: 'Мопед грузовой', cat: 'moped', draw: 'twowheel', speed: 50, price: 110000, kg: 50, l: 90, fat: 0.35, trip: 70, fuel: 'gasoline', tank: 100 },
-  { id: 'scooter_city', name: 'Скутер городской', cat: 'moped', draw: 'twowheel', speed: 55, price: 85000, kg: 20, l: 35, fat: 0.3, trip: 80, fuel: 'gasoline', tank: 120 },
-  { id: 'scooter_tour', name: 'Скутер туристический', cat: 'moped', draw: 'twowheel', speed: 65, price: 120000, kg: 25, l: 40, fat: 0.3, trip: 100, fuel: 'gasoline', tank: 150 },
-  { id: 'escooter_moto', name: 'Электроскутер', cat: 'moped', draw: 'twowheel', speed: 60, price: 140000, kg: 25, l: 40, fat: 0.25, trip: 90, fuel: 'electric', tank: 110 },
-  { id: 'scooter_prem', name: 'Скутер премиум', cat: 'moped', draw: 'twowheel', speed: 70, price: 180000, kg: 28, l: 45, fat: 0.25, trip: 110, fuel: 'gasoline', tank: 160 },
-  { id: 'escooter_long', name: 'Электроскутер дальнобойный', cat: 'moped', draw: 'twowheel', speed: 65, price: 220000, kg: 30, l: 45, fat: 0.2, trip: 130, fuel: 'electric', tank: 160 },
-  { id: 'scooter_sport', name: 'Скутер спорт', cat: 'moped', draw: 'twowheel', speed: 80, price: 260000, kg: 20, l: 30, fat: 0.25, trip: 120, fuel: 'gasoline', tank: 150 },
+  { id: 'moped_50', name: 'Мопед 50 куб.см', cat: 'moped', draw: 'twowheel', speed: 45, price: 60000, kg: 15, l: 25, trip: 60, fuel: 'gasoline', tank: 90 },
+  { id: 'moped_cargo', name: 'Мопед грузовой', cat: 'moped', draw: 'twowheel', speed: 50, price: 110000, kg: 50, l: 90, trip: 70, fuel: 'gasoline', tank: 100 },
+  { id: 'scooter_city', name: 'Скутер городской', cat: 'moped', draw: 'twowheel', speed: 55, price: 85000, kg: 20, l: 35, trip: 80, fuel: 'gasoline', tank: 120 },
+  { id: 'scooter_tour', name: 'Скутер туристический', cat: 'moped', draw: 'twowheel', speed: 65, price: 120000, kg: 25, l: 40, trip: 100, fuel: 'gasoline', tank: 150 },
+  { id: 'escooter_moto', name: 'Электроскутер', cat: 'moped', draw: 'twowheel', speed: 60, price: 140000, kg: 25, l: 40, trip: 90, fuel: 'electric', tank: 110 },
+  { id: 'scooter_prem', name: 'Скутер премиум', cat: 'moped', draw: 'twowheel', speed: 70, price: 180000, kg: 28, l: 45, trip: 110, fuel: 'gasoline', tank: 160 },
+  { id: 'escooter_long', name: 'Электроскутер дальнобойный', cat: 'moped', draw: 'twowheel', speed: 65, price: 220000, kg: 30, l: 45, trip: 130, fuel: 'electric', tank: 160 },
+  { id: 'scooter_sport', name: 'Скутер спорт', cat: 'moped', draw: 'twowheel', speed: 80, price: 260000, kg: 20, l: 30, trip: 120, fuel: 'gasoline', tank: 150 },
 
-  { id: 'moto_125', name: 'Мотоцикл лёгкий 125cc', cat: 'motorcycle', draw: 'twowheel', speed: 90, price: 180000, kg: 20, l: 30, fat: 0.2, trip: 150, fuel: 'gasoline', tank: 200 },
-  { id: 'moto_enduro', name: 'Мотоцикл эндуро', cat: 'motorcycle', draw: 'twowheel', speed: 100, price: 320000, kg: 25, l: 35, fat: 0.2, trip: 180, fuel: 'gasoline', tank: 250 },
-  { id: 'moto_400', name: 'Мотоцикл городской 400cc', cat: 'motorcycle', draw: 'twowheel', speed: 110, price: 450000, kg: 25, l: 40, fat: 0.18, trip: 220, fuel: 'gasoline', tank: 300 },
-  { id: 'moto_tourer', name: 'Мотоцикл-турер', cat: 'motorcycle', draw: 'twowheel', speed: 120, price: 650000, kg: 35, l: 60, fat: 0.15, trip: 280, fuel: 'gasoline', tank: 380 },
-  { id: 'moto_sport', name: 'Мотоцикл спортивный', cat: 'motorcycle', draw: 'twowheel', speed: 140, price: 900000, kg: 15, l: 20, fat: 0.2, trip: 250, fuel: 'gasoline', tank: 320 },
-  { id: 'moto_prem', name: 'Мотоцикл премиум-турер', cat: 'motorcycle', draw: 'twowheel', speed: 130, price: 1400000, kg: 45, l: 80, fat: 0.13, trip: 350, fuel: 'gasoline', tank: 450 },
+  { id: 'moto_125', name: 'Мотоцикл лёгкий 125cc', cat: 'motorcycle', draw: 'twowheel', speed: 90, price: 180000, kg: 20, l: 30, trip: 150, fuel: 'gasoline', tank: 200 },
+  { id: 'moto_enduro', name: 'Мотоцикл эндуро', cat: 'motorcycle', draw: 'twowheel', speed: 100, price: 320000, kg: 25, l: 35, trip: 180, fuel: 'gasoline', tank: 250 },
+  { id: 'moto_400', name: 'Мотоцикл городской 400cc', cat: 'motorcycle', draw: 'twowheel', speed: 110, price: 450000, kg: 25, l: 40, trip: 220, fuel: 'gasoline', tank: 300 },
+  { id: 'moto_tourer', name: 'Мотоцикл-турер', cat: 'motorcycle', draw: 'twowheel', speed: 120, price: 650000, kg: 35, l: 60, trip: 280, fuel: 'gasoline', tank: 380 },
+  { id: 'moto_sport', name: 'Мотоцикл спортивный', cat: 'motorcycle', draw: 'twowheel', speed: 140, price: 900000, kg: 15, l: 20, trip: 250, fuel: 'gasoline', tank: 320 },
+  { id: 'moto_prem', name: 'Мотоцикл премиум-турер', cat: 'motorcycle', draw: 'twowheel', speed: 130, price: 1400000, kg: 45, l: 80, trip: 350, fuel: 'gasoline', tank: 450 },
 
-  { id: 'car_sedan_used', name: 'Подержанный седан', cat: 'car', draw: 'car', speed: 90, price: 450000, kg: 300, l: 400, fat: 0.15, trip: 400, fuel: 'gasoline', tank: 500 },
-  { id: 'car_hatch', name: 'Компактный хэтчбек', cat: 'car', draw: 'car', speed: 100, price: 650000, kg: 320, l: 420, fat: 0.13, trip: 450, fuel: 'gasoline', tank: 550 },
-  { id: 'car_wagon', name: 'Универсал', cat: 'car', draw: 'car', speed: 100, price: 900000, kg: 400, l: 600, fat: 0.13, trip: 500, fuel: 'gasoline', tank: 600 },
-  { id: 'car_crossover', name: 'Кроссовер', cat: 'car', draw: 'car', speed: 110, price: 1300000, kg: 450, l: 650, fat: 0.12, trip: 550, fuel: 'gasoline', tank: 650 },
-  { id: 'car_business', name: 'Бизнес-седан', cat: 'car', draw: 'car', speed: 120, price: 1800000, kg: 400, l: 550, fat: 0.1, trip: 600, fuel: 'gasoline', tank: 700 },
-  { id: 'car_ev_city', name: 'Электромобиль городской', cat: 'car', draw: 'car', speed: 110, price: 2200000, kg: 400, l: 550, fat: 0.1, trip: 350, fuel: 'electric', tank: 400 },
-  { id: 'car_suv', name: 'Внедорожник', cat: 'car', draw: 'car', speed: 115, price: 2800000, kg: 600, l: 900, fat: 0.1, trip: 650, fuel: 'gasoline', tank: 800 },
-  { id: 'car_prem_sedan', name: 'Премиум седан', cat: 'car', draw: 'car', speed: 130, price: 3800000, kg: 400, l: 550, fat: 0.08, trip: 700, fuel: 'gasoline', tank: 850 },
-  { id: 'car_ev_prem', name: 'Электромобиль премиум', cat: 'car', draw: 'car', speed: 130, price: 5500000, kg: 500, l: 700, fat: 0.08, trip: 500, fuel: 'electric', tank: 550 },
-  { id: 'car_sport', name: 'Спорткар', cat: 'car', draw: 'car', speed: 150, price: 7000000, kg: 150, l: 200, fat: 0.1, trip: 600, fuel: 'gasoline', tank: 750 },
+  { id: 'car_sedan_used', name: 'Подержанный седан', cat: 'car', draw: 'car', speed: 90, price: 450000, kg: 300, l: 400, trip: 400, fuel: 'gasoline', tank: 500 },
+  { id: 'car_hatch', name: 'Компактный хэтчбек', cat: 'car', draw: 'car', speed: 100, price: 650000, kg: 320, l: 420, trip: 450, fuel: 'gasoline', tank: 550 },
+  { id: 'car_wagon', name: 'Универсал', cat: 'car', draw: 'car', speed: 100, price: 900000, kg: 400, l: 600, trip: 500, fuel: 'gasoline', tank: 600 },
+  { id: 'car_crossover', name: 'Кроссовер', cat: 'car', draw: 'car', speed: 110, price: 1300000, kg: 450, l: 650, trip: 550, fuel: 'gasoline', tank: 650 },
+  { id: 'car_business', name: 'Бизнес-седан', cat: 'car', draw: 'car', speed: 120, price: 1800000, kg: 400, l: 550, trip: 600, fuel: 'gasoline', tank: 700 },
+  { id: 'car_ev_city', name: 'Электромобиль городской', cat: 'car', draw: 'car', speed: 110, price: 2200000, kg: 400, l: 550, trip: 350, fuel: 'electric', tank: 400 },
+  { id: 'car_suv', name: 'Внедорожник', cat: 'car', draw: 'car', speed: 115, price: 2800000, kg: 600, l: 900, trip: 650, fuel: 'gasoline', tank: 800 },
+  { id: 'car_prem_sedan', name: 'Премиум седан', cat: 'car', draw: 'car', speed: 130, price: 3800000, kg: 400, l: 550, trip: 700, fuel: 'gasoline', tank: 850 },
+  { id: 'car_ev_prem', name: 'Электромобиль премиум', cat: 'car', draw: 'car', speed: 130, price: 5500000, kg: 500, l: 700, trip: 500, fuel: 'electric', tank: 550 },
+  { id: 'car_sport', name: 'Спорткар', cat: 'car', draw: 'car', speed: 150, price: 7000000, kg: 150, l: 200, trip: 600, fuel: 'gasoline', tank: 750 },
 
-  { id: 'van_small', name: 'Малый фургон', cat: 'van', draw: 'truck', speed: 90, price: 1200000, kg: 800, l: 2500, fat: 0.1, trip: 500, fuel: 'gasoline', tank: 700 },
-  { id: 'van_mid', name: 'Фургон средний', cat: 'van', draw: 'truck', speed: 90, price: 2200000, kg: 1500, l: 5000, fat: 0.1, trip: 600, fuel: 'gasoline', tank: 850 },
-  { id: 'van_fridge', name: 'Рефрижератор малый', cat: 'van', draw: 'truck', speed: 85, price: 3200000, kg: 1200, l: 4000, fat: 0.1, trip: 550, fuel: 'diesel', tank: 800, fridge: true },
-  { id: 'truck_mid', name: 'Грузовик среднетоннажный', cat: 'truck', draw: 'truck', speed: 80, price: 4500000, kg: 3500, l: 12000, fat: 0.08, trip: 700, fuel: 'diesel', tank: 1000 },
-  { id: 'truck_semi', name: 'Фура (полуприцеп)', cat: 'truck', draw: 'truck', speed: 85, price: 9000000, kg: 20000, l: 60000, fat: 0.06, trip: 1200, fuel: 'diesel', tank: 1800 },
-  { id: 'truck_semi_fridge', name: 'Рефрижератор-фура', cat: 'truck', draw: 'truck', speed: 85, price: 12000000, kg: 18000, l: 55000, fat: 0.06, trip: 1200, fuel: 'diesel', tank: 1800, fridge: true },
-  { id: 'truck_mega', name: 'Мега-фура премиум', cat: 'truck', draw: 'truck', speed: 90, price: 18000000, kg: 24000, l: 70000, fat: 0.05, trip: 1500, fuel: 'diesel', tank: 2200 },
+  { id: 'van_small', name: 'Малый фургон', cat: 'van', draw: 'truck', speed: 90, price: 1200000, kg: 800, l: 2500, trip: 500, fuel: 'gasoline', tank: 700 },
+  { id: 'van_mid', name: 'Фургон средний', cat: 'van', draw: 'truck', speed: 90, price: 2200000, kg: 1500, l: 5000, trip: 600, fuel: 'gasoline', tank: 850 },
+  { id: 'van_fridge', name: 'Рефрижератор малый', cat: 'van', draw: 'truck', speed: 85, price: 3200000, kg: 1200, l: 4000, trip: 550, fuel: 'diesel', tank: 800, fridge: true },
+  { id: 'truck_mid', name: 'Грузовик среднетоннажный', cat: 'truck', draw: 'truck', speed: 80, price: 4500000, kg: 3500, l: 12000, trip: 700, fuel: 'diesel', tank: 1000 },
+  { id: 'truck_semi', name: 'Фура (полуприцеп)', cat: 'truck', draw: 'truck', speed: 85, price: 9000000, kg: 20000, l: 60000, trip: 1200, fuel: 'diesel', tank: 1800 },
+  { id: 'truck_semi_fridge', name: 'Рефрижератор-фура', cat: 'truck', draw: 'truck', speed: 85, price: 12000000, kg: 18000, l: 55000, trip: 1200, fuel: 'diesel', tank: 1800, fridge: true },
+  { id: 'truck_mega', name: 'Мега-фура премиум', cat: 'truck', draw: 'truck', speed: 90, price: 18000000, kg: 24000, l: 70000, trip: 1500, fuel: 'diesel', tank: 2200 },
 ];
 const VEHICLE_BY_ID = {};
 VEHICLES.forEach(v => { VEHICLE_BY_ID[v.id] = v; });
@@ -175,6 +177,7 @@ const EQUIPMENT = [
   { id: 'pet_carrier_large', name: 'Клетка/переноска для крупных животных', price: 9000, unlocks: ['live_large'] },
   { id: 'fragile_case', name: 'Кейс для хрупких грузов', price: 4000, unlocks: ['fragile'] },
   { id: 'secure_case', name: 'Опломбированный кейс (ценности/документы)', price: 6000, unlocks: ['valuable'] },
+  { id: 'sleeper_cab', name: 'Спальное место в кабине', price: 25000, unlocks: [], desc: 'Как у дальнобойщиков — можно нормально выспаться в машине/фургоне/грузовике без штрафа за неудобство' },
 ];
 
 const STORAGE_LABEL = { normal: 'обычные условия', chilled: 'нужна термосумка/холод', frozen: 'нужна заморозка', fragile: 'хрупкое', live_small: 'нужна переноска (мелкое животное)', live_large: 'нужна клетка (крупное животное)', valuable: 'нужен опломбированный кейс' };
@@ -773,22 +776,32 @@ function offlineAutoEat() {
 
 function offlineAutoSleep() {
   const p = state.player;
+  const spec = vehicleSpec();
   const isHome = pointById(p.positionId).type === 'home';
-  const cost = isHome ? 0 : OFFLINE_SLEEP_AWAY_COST;
-  if (state.money < cost) {
-    p.status = 'resting';
-    p.restElapsed = 0;
-    p.restPlan = { totalMinutes: IDLE_REST_OPTION.minutes, fatigueRelief: IDLE_REST_OPTION.fatigueRelief, label: IDLE_REST_OPTION.label };
-    log('Не хватило денег на ночлег — прикорнул прямо так (офлайн)', { silent: true });
+  if (isHome) {
+    p.status = 'resting'; p.restElapsed = 0;
+    p.restPlan = { totalMinutes: 480, sleepinessRelief: 100, isSleep: true, label: 'Выспаться (8 ч)' };
+    if (offlineAutoTally) offlineAutoTally.sleeps++;
+    log('Поспал дома (авто, пока был офлайн)', { silent: true });
     return;
   }
-  state.money -= cost;
-  const opt = SLEEP_OPTIONS.find(o => o.id === 'sleep8');
-  p.status = 'resting';
-  p.restElapsed = 0;
-  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label };
-  if (offlineAutoTally) { offlineAutoTally.sleeps++; offlineAutoTally.sleepSpent += cost; }
-  log(isHome ? 'Поспал дома (авто, пока был офлайн)' : `Переночевал не дома — ${cost} ₽ (авто, офлайн)`, { silent: true });
+  if (state.money >= OFFLINE_SLEEP_AWAY_COST) {
+    state.money -= OFFLINE_SLEEP_AWAY_COST;
+    p.status = 'resting'; p.restElapsed = 0;
+    p.restPlan = { totalMinutes: 480, sleepinessRelief: 100, isSleep: true, label: 'Ночлег' };
+    if (offlineAutoTally) { offlineAutoTally.sleeps++; offlineAutoTally.sleepSpent += OFFLINE_SLEEP_AWAY_COST; }
+    log(`Переночевал не дома — ${OFFLINE_SLEEP_AWAY_COST} ₽ (авто, офлайн)`, { silent: true });
+    return;
+  }
+  if (spec.draw === 'car' || spec.draw === 'truck') {
+    const relief = p.equipment['sleeper_cab'] ? 100 : 70;
+    p.status = 'resting'; p.restElapsed = 0;
+    p.restPlan = { totalMinutes: 480, sleepinessRelief: relief, isSleep: true, label: 'Поспать в машине (8 ч)' };
+    log('Без денег на ночлег — переночевал в машине (авто, офлайн)', { silent: true });
+    return;
+  }
+  // No money and nowhere to properly lie down — same as if this happened live.
+  triggerSleepyCollapse();
 }
 
 function newGameState() {
@@ -803,9 +816,9 @@ function newGameState() {
       positionId: 'rivnoe:home',
       status: 'idle', // idle | moving | resting | eating
       activity: null,
-      fatigue: 15,
       hunger: 15,
       sleepiness: 15,
+      sleepyGrace: 0, // minutes of post-accident grace before another sleepy-accident roll can happen
       vehicles: [startingVehicle], // every owned vehicle instance; .vehicle below is always one of these (same reference)
       vehicle: startingVehicle,
       restElapsed: 0,
@@ -815,7 +828,6 @@ function newGameState() {
       jobs: [], // { id, fromId, toId, itemName, storage, weightKg, volumeL, urgencyKey, deadlineReal, payout, pickedUp }
       equipment: {},
       warnedHunger: false,
-      warnedFatigue: false,
       warnedSleepy: false,
       warnedDebt: false,
       offeredFoodDelivery: false,
@@ -870,6 +882,9 @@ function migrateEconomyFields() {
   if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
   if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
   if (typeof state.player.warnedSleepy !== 'boolean') state.player.warnedSleepy = false;
+  if (typeof state.player.sleepyGrace !== 'number') state.player.sleepyGrace = 0;
+  delete state.player.fatigue;
+  delete state.player.warnedFatigue;
 }
 
 function log(text, opts) {
@@ -1178,20 +1193,26 @@ function offerFoodDelivery() {
 }
 
 // Free last-resort choice when hungry with no money for delivery: keep going,
-// but energy now drains 3x faster until the courier actually eats something.
-// If both energy and hunger bottom out while enduring, that's game over.
+// but sleepiness now builds 3x faster until the courier actually eats something.
+// If both hunger and sleepiness bottom out while enduring, that's game over.
 function startEnduring() {
   state.player.enduring = true;
-  log('Решил перетерпеть голод — силы теперь тают втрое быстрее, пока не поест', { silent: true });
+  log('Решил перетерпеть голод — в сон теперь клонит втрое быстрее, пока не поест', { silent: true });
 }
-// Real sleep is the only thing that relieves sleepiness (see sleepinessRelief) —
-// a quick roadside/idle rest below only patches fatigue, on purpose.
 const SLEEP_OPTIONS = [
-  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, fatigueRelief: 30, sleepinessRelief: 25, isSleep: true },
-  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, fatigueRelief: 70, sleepinessRelief: 65, isSleep: true },
-  { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, fatigueRelief: 100, sleepinessRelief: 100, isSleep: true },
+  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, sleepinessRelief: 25, isSleep: true },
+  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, sleepinessRelief: 70, isSleep: true },
+  { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, sleepinessRelief: 100, isSleep: true },
 ];
-const IDLE_REST_OPTION = { id: 'breathe', label: 'Просто отдохнуть, не ложась', minutes: 20, fatigueRelief: 10 };
+// Sleeping in the vehicle itself works only where that's physically plausible
+// (a car/van/truck cabin, not a bike or scooter) — and without a sleeper cab
+// it's uncomfortable, so the same hours in the seat pay off only about half
+// as much as a real bed would.
+const VEHICLE_SLEEP_OPTIONS = [
+  { id: 'car_sleep4', label: 'Поспать в машине (4 ч)', minutes: 240, comfortRelief: 40, cabinRelief: 70 },
+  { id: 'car_sleep8', label: 'Поспать в машине (8 ч)', minutes: 480, comfortRelief: 70, cabinRelief: 100 },
+];
+function vehicleCanSleepIn(spec) { return spec.draw === 'car' || spec.draw === 'truck'; }
 // Cutting rest/food short only credits a fraction of the elapsed time's benefit,
 // on top of that fraction already being less than the full plan — the double
 // shortfall is the "didn't get enough sleep/food" penalty.
@@ -1201,14 +1222,10 @@ function cancelCurrentAction() {
   const p = state.player;
   if (p.status === 'resting' && p.restPlan) {
     const fraction = clamp(p.restElapsed / p.restPlan.totalMinutes, 0, 1);
-    if (fraction > 0) {
-      const relief = Math.round(p.restPlan.fatigueRelief * fraction * INTERRUPT_PENALTY_FACTOR);
-      p.fatigue = clamp(p.fatigue - relief, 0, 100);
-      if (p.restPlan.isSleep) {
-        const sleepRelief = Math.round((p.restPlan.sleepinessRelief || 0) * fraction * INTERRUPT_PENALTY_FACTOR);
-        p.sleepiness = clamp(p.sleepiness - sleepRelief, 0, 100);
-      }
-      log(`Прервал отдых (${p.restPlan.label}), не доспал — восстановил ${relief} энергии из ${p.restPlan.fatigueRelief}`, { silent: true });
+    if (fraction > 0 && p.restPlan.isSleep) {
+      const sleepRelief = Math.round((p.restPlan.sleepinessRelief || 0) * fraction * INTERRUPT_PENALTY_FACTOR);
+      p.sleepiness = clamp(p.sleepiness - sleepRelief, 0, 100);
+      log(`Прервал сон (${p.restPlan.label}), не доспал — восстановил ${sleepRelief} из ${p.restPlan.sleepinessRelief}`, { silent: true });
     }
     p.status = 'idle'; p.restPlan = null; p.restElapsed = 0;
   } else if (p.status === 'eating' && p.eatPlan) {
@@ -1246,17 +1263,21 @@ function startSleeping(optionId) {
   const opt = SLEEP_OPTIONS.find(o => o.id === optionId);
   p.status = 'resting';
   p.restElapsed = 0;
-  p.restPlan = { totalMinutes: opt.minutes, fatigueRelief: opt.fatigueRelief, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label };
+  p.restPlan = { totalMinutes: opt.minutes, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label };
   log(`Лёг спать дома: ${opt.label}`, { silent: true });
 }
 
-function startIdleRest() {
+function startVehicleSleep(optionId) {
   const p = state.player;
-  if (p.status !== 'idle') return;
+  const spec = vehicleSpec();
+  if (p.status !== 'idle' || !vehicleCanSleepIn(spec)) return;
+  const opt = VEHICLE_SLEEP_OPTIONS.find(o => o.id === optionId);
+  const hasCab = !!p.equipment['sleeper_cab'];
+  const relief = hasCab ? opt.cabinRelief : opt.comfortRelief;
   p.status = 'resting';
   p.restElapsed = 0;
-  p.restPlan = { totalMinutes: IDLE_REST_OPTION.minutes, fatigueRelief: IDLE_REST_OPTION.fatigueRelief, label: IDLE_REST_OPTION.label };
-  log('Немного отдохнул', { silent: true });
+  p.restPlan = { totalMinutes: opt.minutes, sleepinessRelief: relief, isSleep: true, label: opt.label };
+  log(hasCab ? `Лёг спать в машине (со спальным местом): ${opt.label}` : `Поспал в машине, неудобно — толку в разы меньше: ${opt.label}`, { silent: true });
 }
 
 function interruptRest() {
@@ -1371,8 +1392,7 @@ function onArrive(targetId) {
 
 function breakdownOccurrenceChance() {
   const conditionFactor = (100 - state.player.vehicle.condition) / 100;
-  const sleepyBonus = state.player.sleepiness >= SLEEPY_SPEED_THRESHOLD ? SLEEPY_BREAKDOWN_BONUS : 0;
-  return BREAKDOWN_BASE_CHANCE + conditionFactor * BREAKDOWN_WEAR_BONUS + sleepyBonus;
+  return BREAKDOWN_BASE_CHANCE + conditionFactor * BREAKDOWN_WEAR_BONUS;
 }
 
 function triggerBreakdown(activity) {
@@ -1401,14 +1421,42 @@ function triggerBreakdown(activity) {
   });
 }
 
+// Running the sleep tank fully dry is automatic and unavoidable — there's no
+// choice to make, unlike breakdowns/hunger. On foot the courier just drops where
+// he stands; behind the wheel it's a real accident, with a grace window afterward
+// before it can happen again.
+function triggerSleepyCollapse() {
+  const p = state.player;
+  state.gameTime += FOOT_COLLAPSE_MINUTES;
+  p.sleepiness = clamp(p.sleepiness - (FOOT_COLLAPSE_MINUTES / (16 * 60)) * 100, 0, 100);
+  if (p.jobs.some(j => j.pickedUp)) {
+    state.money -= CARGO_MISHAP_FINE;
+    log(`Не удержался на ногах от недосыпа — уснул прямо на месте на 2 часа. Груз помялся, штраф ${CARGO_MISHAP_FINE} ₽.`);
+  } else {
+    log('Не удержался на ногах от недосыпа — уснул прямо на месте на 2 часа.');
+  }
+}
+
+function triggerSleepyAccident() {
+  const p = state.player;
+  p.sleepyGrace = SLEEPY_GRACE_MINUTES;
+  p.vehicle.condition = clamp(p.vehicle.condition - SLEEPY_ACCIDENT_CONDITION_DAMAGE, 0, 100);
+  state.money -= SLEEPY_ACCIDENT_REPAIR_COST;
+  if (p.activity) p.activity.totalKm *= SLEEPY_ACCIDENT_TRIP_PENALTY;
+  const cargoHit = p.jobs.some(j => j.pickedUp);
+  if (cargoHit) state.money -= CARGO_MISHAP_FINE;
+  const cargoText = cargoHit ? `, груз повреждён (-${CARGO_MISHAP_FINE} ₽)` : '';
+  log(`Заснул за рулём — авария! Ремонт обошёлся в ${SLEEPY_ACCIDENT_REPAIR_COST} ₽${cargoText}. Час на то, чтобы прийти в себя, потом может вырубить снова.`);
+}
+
 function triggerExhausted(activity) {
   activity.problemPending = true;
   activity.problem = { kind: 'exhausted' };
-  log('Силы кончились прямо в пути', { silent: true });
+  log('Так проголодался в пути, что дальше идти не может', { silent: true });
   pushPendingAction({
     kind: 'exhausted',
-    title: 'Не осталось сил',
-    text: 'Совсем без сил, дальше ехать нельзя. Нужно отдохнуть прямо тут, на обочине.',
+    title: 'Совсем нет сил от голода',
+    text: 'Так голоден, что дальше идти/ехать нельзя. Закажи доставку еды сюда или через силу тащись дальше на голодный желудок.',
   });
 }
 
@@ -1449,10 +1497,7 @@ function resolvePendingAction(actionId, choice) {
       orderFoodDelivery();
       log('Заказал доставку еды на обочину, пока стоял без сил', { silent: true });
     } else {
-      // Roadside rest only relieves fatigue a little — it does NOT feed the courier
-      // and does nothing for real sleepiness, which keeps climbing regardless.
-      state.player.fatigue = 40;
-      log('Отдохнул на обочине, силы немного вернулись, но есть по-прежнему хочется, а в сон всё равно клонит');
+      log('Пошёл дальше на голодный желудок, через силу');
     }
   }
 
@@ -1572,20 +1617,22 @@ function simulateTick(dt, summary) {
   // standing there: eats or sleeps automatically once idle and in real need.
   if (catchupBuffer && p.status === 'idle') {
     if (p.hunger >= 80) offlineAutoEat();
-    else if (p.fatigue >= 80 || p.sleepiness >= 80) offlineAutoSleep();
+    else if (p.sleepiness >= 80) offlineAutoSleep();
   }
 
-  // Sleepiness is the real need for sleep: it climbs with time no matter what the
-  // courier is doing, and only actual sleep (not a quick roadside/idle rest) brings
-  // it down — so patching fatigue alone can't substitute for sleep forever.
+  // Sleepiness is the courier's one tiredness stat: it climbs with time no matter
+  // what he's doing, and only actual sleep brings it down. Enduring hunger with no
+  // money makes it climb 3x faster on top of that.
+  const sleepyMult = p.enduring ? ENDURE_SLEEPINESS_MULT : 1;
   if (!(p.status === 'resting' && p.restPlan && p.restPlan.isSleep)) {
-    p.sleepiness = clamp(p.sleepiness + SLEEPINESS_RATE * dt, 0, 100);
+    p.sleepiness = clamp(p.sleepiness + SLEEPINESS_RATE * dt * sleepyMult, 0, 100);
   }
+  p.sleepyGrace = Math.max(0, p.sleepyGrace - dt);
 
   if (p.status === 'moving') {
     const a = p.activity;
     const offline = !!catchupBuffer;
-    if (p.enduring && p.fatigue >= 100 && p.hunger >= 100) {
+    if (p.enduring && p.sleepiness >= 100 && p.hunger >= 100) {
       // Truly unrecoverable — but never let it happen silently while the
       // player was away. Offline, freeze right here so they resume live at
       // this exact critical moment with a real choice; online, it's game over.
@@ -1596,12 +1643,9 @@ function simulateTick(dt, summary) {
     } else {
       const spec = vehicleSpec();
       const nightMult = isNight() ? NIGHT_SPEED_MULT : 1;
-      const sleepyMult = p.sleepiness >= SLEEPY_SPEED_THRESHOLD ? SLEEPY_SPEED_MULT : 1;
-      const effSpeed = spec.speed * nightMult * sleepyMult;
+      const effSpeed = spec.speed * nightMult;
       const kmThisTick = effSpeed * (dt / 60);
       a.traveledKm = clamp(a.traveledKm + kmThisTick, 0, a.totalKm);
-      const enduranceMult = p.enduring ? ENDURE_FATIGUE_MULT : 1;
-      p.fatigue = clamp(p.fatigue + spec.fat * kmThisTick * enduranceMult, 0, 100);
       p.hunger = clamp(p.hunger + HUNGER_RATE_MOVING * dt, 0, 100);
       if (p.hunger >= 90 && p.hunger < 100 && !p.offeredFoodDelivery) {
         p.offeredFoodDelivery = true;
@@ -1624,14 +1668,10 @@ function simulateTick(dt, summary) {
           if (summary) summary.incidents++;
           if (offline) resolveOfflineBreakdown(a);
         }
-      } else if (p.fatigue >= 100 || p.hunger >= 100) {
+      } else if (p.hunger >= 100) {
         if (offline) {
-          if (p.hunger >= 100 && state.money >= foodDeliveryPrice()) {
-            orderFoodDelivery();
-          } else {
-            p.fatigue = 40;
-            log('Автоматически отдохнул на обочине (пока был офлайн)', { silent: true });
-          }
+          if (state.money >= foodDeliveryPrice()) orderFoodDelivery();
+          else startEnduring();
         } else {
           triggerExhausted(a);
           if (summary) summary.incidents++;
@@ -1644,7 +1684,6 @@ function simulateTick(dt, summary) {
     p.restElapsed += dt;
     p.hunger = clamp(p.hunger + HUNGER_RATE_RESTING * dt, 0, 100);
     if (p.restElapsed >= p.restPlan.totalMinutes) {
-      p.fatigue = clamp(p.fatigue - p.restPlan.fatigueRelief, 0, 100);
       if (p.restPlan.isSleep) p.sleepiness = clamp(p.sleepiness - p.restPlan.sleepinessRelief, 0, 100);
       log(`Отдохнул: ${p.restPlan.label}`);
       p.status = 'idle'; p.restPlan = null;
@@ -1661,21 +1700,26 @@ function simulateTick(dt, summary) {
     p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
   }
 
-  // Ignored sleepiness for too long, no matter how much fatigue was patched up
-  // along the way: the courier involuntarily collapses right where he stands.
-  if (p.sleepiness >= 100 && !(p.status === 'resting' && p.restPlan && p.restPlan.isSleep)) {
-    p.sleepiness = SLEEPY_COLLAPSE_RESET;
-    p.fatigue = clamp(p.fatigue - SLEEPY_COLLAPSE_FATIGUE_RELIEF, 0, 100);
-    if (p.status === 'moving' && p.activity) p.activity.totalKm *= SLEEPY_COLLAPSE_TRIP_PENALTY;
-    if (summary) summary.incidents++;
-    log('Вырубило от недосыпа прямо на месте — пришлось поспать там, где стоял. Так и доставку недолго сорвать.');
+  // Ran the sleep tank fully dry: on foot he just collapses where he stands; behind
+  // the wheel (or handlebars) of anything else, it's a serious accident risk instead.
+  if (!state.gameOver && p.sleepiness >= 100) {
+    const spec = vehicleSpec();
+    if (p.sleepyGrace <= 0) {
+      if (p.status === 'moving' && spec.cat !== 'foot') {
+        if (Math.random() < SLEEPY_ACCIDENT_CHANCE) {
+          triggerSleepyAccident();
+          if (summary) summary.incidents++;
+        }
+      } else {
+        triggerSleepyCollapse();
+        if (summary) summary.incidents++;
+      }
+    }
   }
 
   if (p.hunger >= 90 && !p.warnedHunger) { p.warnedHunger = true; toast('Курьер сильно голоден — пора поесть'); }
   if (p.hunger < 80) { p.warnedHunger = false; p.offeredFoodDelivery = false; }
-  if (p.fatigue >= 90 && !p.warnedFatigue) { p.warnedFatigue = true; toast('Курьер сильно устал — пора отдохнуть'); }
-  if (p.fatigue < 80) p.warnedFatigue = false;
-  if (p.sleepiness >= SLEEPY_WARN_THRESHOLD && !p.warnedSleepy) { p.warnedSleepy = true; toast('Курьера конкретно клонит в сон — нужен настоящий сон, а не просто передышка'); }
+  if (p.sleepiness >= SLEEPY_WARN_THRESHOLD && !p.warnedSleepy) { p.warnedSleepy = true; toast('Курьера конкретно клонит в сон — если не поспать по-настоящему, того и гляди вырубит или будет авария'); }
   if (p.sleepiness < 70) p.warnedSleepy = false;
 
   state.gameTime += dt;
@@ -2340,8 +2384,8 @@ function renderPointPanel() {
       addBtn(missing <= 0.01 ? 'Бак полон' : `⛽ Заправиться — ${cost} ₽`, () => { refuel(); renderAll(); }, missing <= 0.01 || state.money < cost);
     }
   }
-  if (point.type !== 'home') {
-    addBtn(IDLE_REST_OPTION.label, () => { startIdleRest(); renderAll(); });
+  if (point.type !== 'home' && vehicleCanSleepIn(vehicleSpec())) {
+    VEHICLE_SLEEP_OPTIONS.forEach(opt => addBtn(opt.label, () => { startVehicleSleep(opt.id); renderAll(); }));
   }
 }
 
@@ -2598,13 +2642,13 @@ function openProblemModal(action) {
       addBtn(`${personal ? 'Взять такси до дома' : 'Вызвать эвакуатор'} — ${type.towCost} ₽`, 'tow');
     }
   } else if (action.kind === 'exhausted') {
-    addBtn('Отдохнуть на обочине', 'ignore');
+    addBtn('Идти через силу, на голодный желудок', 'ignore');
     if (state.player.hunger >= 60) {
       addBtn(`🍔 Заказать доставку еды — ${foodDeliveryPrice()} ₽`, 'deliver', state.money < foodDeliveryPrice());
     }
   } else if (action.kind === 'hungry') {
     addBtn(`🍔 Заказать доставку — ${foodDeliveryPrice()} ₽`, 'deliver', state.money < foodDeliveryPrice());
-    addBtn('Потерпеть (энергия будет таять втрое быстрее)', 'endure');
+    addBtn('Потерпеть (в сон будет клонить втрое быстрее)', 'endure');
   }
   el('problem-modal').classList.remove('hidden');
 }
@@ -2656,9 +2700,8 @@ function renderAll() {
   el('hud-money').style.color = state.money < 0 ? '#d9534f' : '';
   el('hud-time').textContent = formatTime(state.gameTime);
   el('btn-expenses').textContent = `-${state.dailyExpense.total} ₽/день`;
-  // Displayed inverted: these read as energy/satiety, so the bar drains as
-  // fatigue/hunger (the underlying tracked values) climb toward exhausted/hungry.
-  el('bar-fatigue').style.width = `${100 - state.player.fatigue}%`;
+  // Displayed inverted: these read as satiety/rest, so the bar drains as
+  // hunger/sleepiness (the underlying tracked values) climb toward hungry/exhausted.
   el('bar-hunger').style.width = `${100 - state.player.hunger}%`;
   el('bar-sleepiness').style.width = `${100 - state.player.sleepiness}%`;
   renderStatusPanel();
@@ -2710,7 +2753,8 @@ function openShop() {
       const li = document.createElement('li');
       const owned = !!state.player.equipment[eq.id];
       const info = document.createElement('div');
-      info.innerHTML = `<b>${eq.name}</b><div class="job-sub">Открывает: ${eq.unlocks.map(u => STORAGE_LABEL[u]).join(', ')}</div>`;
+      const eqSub = eq.unlocks.length ? `Открывает: ${eq.unlocks.map(u => STORAGE_LABEL[u]).join(', ')}` : eq.desc;
+      info.innerHTML = `<b>${eq.name}</b><div class="job-sub">${eqSub}</div>`;
       const btn = document.createElement('button');
       btn.textContent = owned ? 'Есть' : `Купить — ${eq.price.toLocaleString('ru-RU')} ₽`;
       btn.disabled = owned || state.money < eq.price;
@@ -2834,7 +2878,7 @@ function renderGarageDetail(box, vehicleType) {
     <div><span>Макс. рейс без остановки</span>${spec.trip} км</div>
     ${fuelRow}
     ${suspensionRow}
-    <div><span>Утомляемость</span>${spec.fat.toFixed(2)}/км</div>
+    <div><span>Сон в дороге</span>${vehicleCanSleepIn(spec) ? 'можно в кабине' : 'спать нельзя'}</div>
   `;
   wrap.appendChild(grid);
 
