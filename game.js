@@ -3,7 +3,7 @@
 const SAVE_KEY = 'courier_save_v5';
 const TIME_SCALE = 100; // game runs 100x faster than real life (testing value)
 const GAME_MIN_PER_REAL_SEC = TIME_SCALE / 60;
-const DAY_START_OFFSET = 8 * 60; // game clock begins at Day 1, 08:00
+const DAY_START_OFFSET = 9 * 60; // game clock begins at Day 1, 09:00
 const MAX_OFFLINE_MS = 60 * 24 * 3600 * 1000; // cap catch-up at 60 real days
 const TOAST_DURATION_MS = 5000;
 const TOAST_EXIT_MS = 700; // duration of the fly-to-diary dismiss animation
@@ -3132,7 +3132,22 @@ el('btn-workshop-repair').onclick = () => { workshopRepair(); openWorkshop(); re
 el('btn-workshop-upgrade').onclick = () => { workshopUpgrade(); openWorkshop(); renderAll(); };
 
 window.addEventListener('beforeunload', () => { if (state) saveGame(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden && state) saveGame(); });
+// requestAnimationFrame simply stops firing while the tab/app is backgrounded or
+// minimized — the game doesn't "pause" on purpose, it just has no way to keep
+// ticking without a frame callback. Route the same catch-up used when reopening
+// from the menu through here too, so minimizing behaves the same as closing.
+document.addEventListener('visibilitychange', () => {
+  if (!state) return;
+  if (document.hidden) {
+    saveGame();
+  } else if (!gameScreen.classList.contains('hidden')) {
+    const summary = runOfflineCatchup();
+    lastFrameTs = null;
+    saveGame();
+    renderAll();
+    if (summary) showOfflineSummary(summary);
+  }
+});
 window.addEventListener('resize', () => { if (!gameScreen.classList.contains('hidden')) resizeCanvas(); });
 
 showMenuScreen();
