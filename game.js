@@ -504,37 +504,56 @@ function pickUnusedName(kind, rng, used) {
   return fallback;
 }
 
-// Big cities/metros get a laid-out street grid (points snapped to a coarse
-// grid, connected in straight rows/columns like real city blocks); small
-// towns and villages keep the organic scatter-and-chain layout they always
-// had, which reads as winding country lanes once rendered.
-function buildGridPoints(kinds, rng, used) {
-  const cols = Math.ceil(Math.sqrt(kinds.length));
-  const rows = Math.ceil(kinds.length / cols);
-  const marginMin = 16, marginMax = 84;
-  const cellW = (marginMax - marginMin) / cols, cellH = (marginMax - marginMin) / rows;
+// Big cities/metros get a radial layout instead of a rigid grid: points sit at
+// varying distances/angles from the centre (uneven "block" sizes, nothing
+// snapped to a corner), connected by radial avenues out from the centre plus
+// roads linking points within the same ring — and metros additionally close
+// the outermost ring into a loop, like a beltway/MKAD around the city.
+function buildUrbanPoints(kinds, tier, rng, used) {
+  const n = kinds.length;
+  const ringCount = tier === 'metro' ? 3 + Math.floor(rng() * 2) : 2 + Math.floor(rng() * 2);
+  const ringAssignments = [];
+  for (let i = 0; i < n; i++) ringAssignments.push(i % ringCount);
+  const shuffledRings = seededShuffle(ringAssignments, rng);
+  const minRadius = 9, maxRadius = 38;
   return kinds.map((kind, i) => {
-    const col = i % cols, row = Math.floor(i / cols);
-    const x = marginMin + col * cellW + cellW / 2 + (rng() - 0.5) * cellW * 0.12;
-    const y = marginMin + row * cellH + cellH / 2 + (rng() - 0.5) * cellH * 0.12;
-    return { id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x, y, gridCol: col, gridRow: row };
+    const ring = shuffledRings[i];
+    const radiusBase = ringCount > 1 ? minRadius + (ring / (ringCount - 1)) * (maxRadius - minRadius) : (minRadius + maxRadius) / 2;
+    const radius = radiusBase + (rng() - 0.5) * 7;
+    const angle = rng() * Math.PI * 2;
+    const x = clamp(50 + Math.cos(angle) * radius, 6, 94);
+    const y = clamp(50 + Math.sin(angle) * radius, 6, 94);
+    return { id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x, y, ring, angle };
   });
 }
-function buildGridEdges(points) {
+function buildUrbanEdges(points, tier) {
   const edges = [];
-  const byRow = {}, byCol = {};
-  points.forEach(p => {
-    (byRow[p.gridRow] = byRow[p.gridRow] || []).push(p);
-    (byCol[p.gridCol] = byCol[p.gridCol] || []).push(p);
+  const byRing = {};
+  points.forEach(p => (byRing[p.ring] = byRing[p.ring] || []).push(p));
+  const ringIndices = Object.keys(byRing).map(Number).sort((a, b) => a - b);
+
+  ringIndices.forEach((ringIdx, idx) => {
+    const ringPts = byRing[ringIdx].slice().sort((a, b) => a.angle - b.angle);
+    for (let i = 1; i < ringPts.length; i++) edges.push([ringPts[i - 1].id, ringPts[i].id]);
+    const isOutermost = idx === ringIndices.length - 1;
+    if (isOutermost && tier === 'metro' && ringPts.length >= 3) {
+      edges.push([ringPts[ringPts.length - 1].id, ringPts[0].id]); // beltway closure
+    }
   });
-  Object.values(byRow).forEach(row => {
-    row.sort((a, b) => a.gridCol - b.gridCol);
-    for (let i = 1; i < row.length; i++) edges.push([row[i - 1].id, row[i].id]);
-  });
-  Object.values(byCol).forEach(col => {
-    col.sort((a, b) => a.gridRow - b.gridRow);
-    for (let i = 1; i < col.length; i++) edges.push([col[i - 1].id, col[i].id]);
-  });
+
+  for (let r = 1; r < ringIndices.length; r++) {
+    const inner = byRing[ringIndices[r - 1]];
+    const outer = byRing[ringIndices[r]];
+    outer.forEach(op => {
+      let best = null, bestDiff = Infinity;
+      inner.forEach(ip => {
+        let diff = Math.abs(ip.angle - op.angle);
+        diff = Math.min(diff, Math.PI * 2 - diff);
+        if (diff < bestDiff) { bestDiff = diff; best = ip; }
+      });
+      edges.push([op.id, best.id]); // radial avenue toward the centre
+    });
+  }
   return edges;
 }
 function buildOrganicPoints(kinds, rng, used) {
@@ -562,9 +581,9 @@ function buildSettlementLayout(cityId, tier) {
   if (blueprint.workshop) kinds.push('workshop');
   if (rng() < blueprint.gasChance) kinds.push('gas');
 
-  const isGrid = tier === 'big' || tier === 'metro';
-  const points = isGrid ? buildGridPoints(kinds, rng, used) : buildOrganicPoints(kinds, rng, used);
-  const edges = isGrid ? buildGridEdges(points) : buildOrganicEdges(points, rng);
+  const isUrban = tier === 'big' || tier === 'metro';
+  const points = isUrban ? buildUrbanPoints(kinds, tier, rng, used) : buildOrganicPoints(kinds, rng, used);
+  const edges = isUrban ? buildUrbanEdges(points, tier) : buildOrganicEdges(points, rng);
   return { points, edges, anchorId: points[0].id };
 }
 
@@ -2127,16 +2146,16 @@ function drawRoads(mapKey, points, edges, toPx) {
   const byId = id => points.find(p => p.id === id);
   const [seg, off] = edgeJitter(mapKey);
   const tier = SETTLEMENT_TIER[mapKey] || 'village';
-  const isGrid = tier === 'big' || tier === 'metro';
-  ctx.strokeStyle = isGrid ? '#2c3038' : '#3a2e22';
-  ctx.lineWidth = isGrid ? 4 : 3;
+  const isUrban = tier === 'big' || tier === 'metro';
+  ctx.strokeStyle = isUrban ? '#2c3038' : '#3a2e22';
+  ctx.lineWidth = isUrban ? 4 : 3;
   ctx.lineCap = 'round';
   edges.forEach(([aId, bId]) => {
     const a = byId(aId), b = byId(bId);
     const poly = getEdgePolyline(mapKey, aId, bId, a, b, seg, off);
     strokePolyline(poly, toPx);
   });
-  ctx.strokeStyle = isGrid ? '#828d9c' : '#a9895f';
+  ctx.strokeStyle = isUrban ? '#828d9c' : '#a9895f';
   ctx.lineWidth = 1;
   edges.forEach(([aId, bId]) => {
     const a = byId(aId), b = byId(bId);
