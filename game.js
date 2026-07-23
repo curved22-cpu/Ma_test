@@ -255,17 +255,17 @@ const POINT_STYLES = {
 
 const RIVNOE_POINTS_RAW = [
   { id: 'home', name: 'Дом', type: 'home', x: 12, y: 50 },
-  { id: 'cafe', name: 'Кафе «Уют»', type: 'cafe', x: 35, y: 40 },
-  { id: 'shop', name: 'Магазин техники «Скорость»', type: 'shop', x: 70, y: 28 },
-  { id: 'workshop', name: 'Мастерская «Гайка»', type: 'workshop', x: 78, y: 55 },
-  { id: 'gas', name: 'АЗС «Полный бак»', type: 'gas', x: 45, y: 75 },
-  { id: 'warehouse', name: 'Склад «Логист»', type: 'delivery', x: 50, y: 50 },
-  { id: 'mall', name: 'ТЦ Горизонт', type: 'delivery', x: 22, y: 15 },
-  { id: 'bus', name: 'Автовокзал', type: 'delivery', x: 85, y: 15 },
-  { id: 'hospital', name: 'Больница №1', type: 'delivery', x: 60, y: 8 },
-  { id: 'market', name: 'Рынок', type: 'delivery', x: 28, y: 66 },
-  { id: 'district', name: 'Спальный район', type: 'delivery', x: 85, y: 85 },
-  { id: 'park', name: 'Парк Победы', type: 'delivery', x: 15, y: 82 },
+  { id: 'cafe', name: 'Кафе «Уют»', type: 'cafe', x: 35, y: 40, hours: { open: 7 * 60, close: 23 * 60 } },
+  { id: 'shop', name: 'Магазин техники «Скорость»', type: 'shop', x: 70, y: 28, hours: { open: 9 * 60, close: 20 * 60 } },
+  { id: 'workshop', name: 'Мастерская «Гайка»', type: 'workshop', x: 78, y: 55, hours: { open: 9 * 60, close: 19 * 60 } },
+  { id: 'gas', name: 'АЗС «Полный бак»', type: 'gas', x: 45, y: 75, hours: { always: true } },
+  { id: 'warehouse', name: 'Склад «Логист»', type: 'delivery', x: 50, y: 50, hours: { open: 8 * 60, close: 18 * 60 } },
+  { id: 'mall', name: 'ТЦ Горизонт', type: 'delivery', x: 22, y: 15, hours: { open: 10 * 60, close: 22 * 60 } },
+  { id: 'bus', name: 'Автовокзал', type: 'delivery', x: 85, y: 15, hours: { always: true } },
+  { id: 'hospital', name: 'Больница №1', type: 'delivery', x: 60, y: 8, hours: { always: true } },
+  { id: 'market', name: 'Рынок', type: 'delivery', x: 28, y: 66, hours: { open: 7 * 60, close: 19 * 60 } },
+  { id: 'district', name: 'Спальный район', type: 'delivery', x: 85, y: 85, hours: { always: true } },
+  { id: 'park', name: 'Парк Победы', type: 'delivery', x: 15, y: 82, hours: { open: 6 * 60, close: 23 * 60 } },
 ];
 const RIVNOE_EDGES_RAW = [
   ['home', 'park'], ['home', 'cafe'],
@@ -442,7 +442,7 @@ const WORLD_EDGES = [];
 
 function addCityDef(cityId, rawPoints, rawEdges, gateAnchorLocalId) {
   rawPoints.forEach(p => {
-    WORLD_POINTS[`${cityId}:${p.id}`] = { id: `${cityId}:${p.id}`, name: p.name, type: p.type, x: p.x, y: p.y };
+    WORLD_POINTS[`${cityId}:${p.id}`] = { id: `${cityId}:${p.id}`, name: p.name, type: p.type, x: p.x, y: p.y, hours: p.hours || null };
   });
   rawEdges.forEach(([a, b]) => WORLD_EDGES.push([`${cityId}:${a}`, `${cityId}:${b}`]));
   const meta = cityMeta(cityId);
@@ -475,6 +475,30 @@ const SETTLEMENT_POINT_TYPE = {
   hospital: 'delivery', clinic: 'delivery', mall: 'delivery', district: 'delivery', park: 'delivery',
   cafe: 'cafe', workshop: 'workshop', gas: 'gas', shop: 'shop',
 };
+// Every organization keeps its own hours; a few run round the clock.
+const HOURS_BY_KIND = {
+  market: { open: 7 * 60, close: 19 * 60 },
+  warehouse: { open: 8 * 60, close: 18 * 60 },
+  bus: { always: true },
+  busStop: { always: true },
+  hospital: { always: true },
+  clinic: { open: 8 * 60, close: 20 * 60 },
+  mall: { open: 10 * 60, close: 22 * 60 },
+  district: { always: true }, // delivering to someone's home, not a business
+  park: { open: 6 * 60, close: 23 * 60 },
+  cafe: { open: 7 * 60, close: 23 * 60 },
+  workshop: { open: 9 * 60, close: 19 * 60 },
+  gas: { always: true },
+  shop: { open: 9 * 60, close: 20 * 60 },
+};
+function hoursForKind(kind, rng) {
+  const base = HOURS_BY_KIND[kind];
+  if (!base) return null;
+  // A minority of cafes are 24h diners — variety, and a legitimate lifeline
+  // for a courier stuck hungry in the middle of the night.
+  if (kind === 'cafe' && !base.always && rng() < 0.2) return { always: true };
+  return base;
+}
 // What each tier is built from: which delivery-ish points it gets (repeats
 // allowed for multiple districts/malls), how many cafes, and whether it has
 // a vehicle shop, workshop, or gas station at all.
@@ -523,7 +547,7 @@ function buildUrbanPoints(kinds, tier, rng, used) {
     const angle = rng() * Math.PI * 2;
     const x = clamp(50 + Math.cos(angle) * radius, 6, 94);
     const y = clamp(50 + Math.sin(angle) * radius, 6, 94);
-    return { id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x, y, ring, angle };
+    return { id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x, y, ring, angle, hours: hoursForKind(kind, rng) };
   });
 }
 function buildUrbanEdges(points, tier) {
@@ -557,7 +581,7 @@ function buildUrbanEdges(points, tier) {
   return edges;
 }
 function buildOrganicPoints(kinds, rng, used) {
-  return kinds.map((kind, i) => ({ id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x: 12 + rng() * 76, y: 12 + rng() * 76 }));
+  return kinds.map((kind, i) => ({ id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x: 12 + rng() * 76, y: 12 + rng() * 76, hours: hoursForKind(kind, rng) }));
 }
 function buildOrganicEdges(points, rng) {
   const edges = [];
@@ -701,7 +725,7 @@ COUNTRY_ROAD_EDGES.forEach(([cityAId, cityBId]) => {
   fractions.forEach((f, i) => {
     const pos = pointOnPolyline(fullPoly, f);
     const stopId = `hwy:${edgeKey}:${i}`;
-    WORLD_POINTS[stopId] = { id: stopId, name: `Придорожная стоянка ${i + 1} (${a.name}—${b.name})`, type: 'waystop', x: pos.x, y: pos.y };
+    WORLD_POINTS[stopId] = { id: stopId, name: `Придорожная стоянка ${i + 1} (${a.name}—${b.name})`, type: 'waystop', x: pos.x, y: pos.y, hours: { always: true } };
     WORLD_EDGES.push([prevId, stopId]);
     prevId = stopId;
   });
@@ -845,9 +869,11 @@ function positionAlongPath(path, fracKm, totalKm) {
   return { x: last.x, y: last.y, space: waypointSpace(lastId) };
 }
 
+function minuteOfDay(gameTime) { return (gameTime + DAY_START_OFFSET) % 1440; }
+
 function isNight() {
-  const minuteOfDay = (state.gameTime + DAY_START_OFFSET) % 1440;
-  return minuteOfDay >= NIGHT_START_MIN || minuteOfDay < NIGHT_END_MIN;
+  const m = minuteOfDay(state.gameTime);
+  return m >= NIGHT_START_MIN || m < NIGHT_END_MIN;
 }
 
 const MAX_NIGHT_ALPHA = 0.6;
@@ -856,12 +882,37 @@ const MAX_NIGHT_ALPHA = 0.6;
 // nothing right at the window's edges (22:00 / 06:00), so it lines up with the
 // existing night-speed penalty instead of just being a hard on/off tint.
 function nightAlpha() {
-  const minuteOfDay = (state.gameTime + DAY_START_OFFSET) % 1440;
+  const m = minuteOfDay(state.gameTime);
   const nightMid = (NIGHT_START_MIN + (NIGHT_END_MIN + 1440)) / 2 % 1440; // 02:00
   const halfWindow = ((NIGHT_END_MIN + 1440) - NIGHT_START_MIN) / 2; // 4h
-  const diff = Math.abs(((minuteOfDay - nightMid + 720 + 1440) % 1440) - 720);
+  const diff = Math.abs(((m - nightMid + 720 + 1440) % 1440) - 720);
   const t = clamp(1 - diff / halfWindow, 0, 1);
   return t * MAX_NIGHT_ALPHA;
+}
+
+// ---------- business hours ----------
+// `hours` on a point is either {always:true} or {open, close} in minutes-of-day.
+// Points with no `hours` at all (home, gate, the highway itself) are never gated.
+function isPointOpenNow(point) {
+  const hours = point && point.hours;
+  if (!hours) return true;
+  if (hours.always) return true;
+  const m = minuteOfDay(state.gameTime);
+  return hours.open <= hours.close ? (m >= hours.open && m < hours.close) : (m >= hours.open || m < hours.close);
+}
+function minutesUntilOpen(point) {
+  const hours = point && point.hours;
+  if (!hours || hours.always) return 0;
+  const m = minuteOfDay(state.gameTime);
+  if (isPointOpenNow(point)) return 0;
+  return m < hours.open ? hours.open - m : (1440 - m) + hours.open;
+}
+function formatHoursLabel(point) {
+  const hours = point && point.hours;
+  if (!hours) return '';
+  if (hours.always) return 'круглосуточно';
+  const fmt = mins => `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  return `${fmt(hours.open)}–${fmt(hours.close)}`;
 }
 
 // ---------- state ----------
@@ -1245,6 +1296,7 @@ function pickUpJob(jobId) {
   const job = p.jobs.find(j => j.id === jobId && !j.pickedUp);
   if (!job) return;
   if (p.status !== 'idle' || p.positionId !== job.fromId) return;
+  if (!isPointOpenNow(pointById(job.fromId))) { toast('Закрыто — придётся подождать открытия'); return; }
   if (!hasRequiredEquipment(job.storage)) { toast(`Нужно снаряжение: ${equipmentLabelFor(job.storage)}`); return; }
   const spec = vehicleSpec();
   if (cargoWeightKg() + job.weightKg > spec.kg || cargoVolumeL() + job.volumeL > spec.l) {
@@ -1268,6 +1320,7 @@ function deliverJob(jobId) {
   const job = p.jobs.find(j => j.id === jobId && j.pickedUp);
   if (!job) return;
   if (p.status !== 'idle' || p.positionId !== job.toId) return;
+  if (!isPointOpenNow(pointById(job.toId))) { toast('Закрыто — придётся подождать открытия'); return; }
   const penaltyFrac = lateDeliveryPenaltyFrac(job);
   const actualPayout = Math.round(job.payout * (1 - penaltyFrac));
   state.money += actualPayout;
@@ -1394,6 +1447,7 @@ function startEating(optionId) {
   const isHome = point.type === 'home';
   const canEatHere = isHome || point.type === 'cafe' || point.type === 'waystop';
   if (!canEatHere) return;
+  if (!isPointOpenNow(point)) { toast('Закрыто — придётся подождать открытия'); return; }
   const opt = EAT_OPTIONS.find(o => o.id === optionId);
   const cost = isHome ? 0 : EAT_PRICE_CAFE[optionId];
   if (state.money < cost) { toast('Не хватает денег'); return; }
@@ -1441,6 +1495,7 @@ function refuel() {
   const point = pointById(p.positionId);
   if (point.type !== 'gas' && point.type !== 'waystop') return;
   if (p.status !== 'idle') return;
+  if (!isPointOpenNow(point)) { toast('Закрыто — придётся подождать открытия'); return; }
   const missing = spec.tank - p.vehicle.fuel;
   if (missing <= 0.01) return;
   const cost = Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
@@ -1448,6 +1503,22 @@ function refuel() {
   state.money -= cost;
   p.vehicle.fuel = spec.tank;
   log(`Заправился (${cost} ₽)`, { silent: true });
+}
+
+// ---------- business hours: waiting for a closed point to open ----------
+
+function waitForOpening(pointId) {
+  const p = state.player;
+  if (p.status !== 'idle' || p.positionId !== pointId) return;
+  const point = pointById(pointId);
+  if (isPointOpenNow(point)) return;
+  let guard = 0;
+  while (!isPointOpenNow(point) && state.pendingActions.length === 0 && !state.gameOver && guard < 100) {
+    simulateTick(Math.min(20, Math.max(1, minutesUntilOpen(point))));
+    guard++;
+  }
+  log(isPointOpenNow(point) ? `Дождался открытия: ${point.name}` : 'Ожидание прервано — что-то случилось', { silent: true });
+  saveGame();
 }
 
 // ---------- travel ----------
@@ -1644,6 +1715,7 @@ function resolvePendingAction(actionId, choice) {
       orderFoodDelivery();
       log('Заказал доставку еды на обочину, пока стоял без сил', { silent: true });
     } else {
+      startEnduring();
       log('Пошёл дальше на голодный желудок, через силу');
     }
   }
@@ -1815,7 +1887,10 @@ function simulateTick(dt, summary) {
           if (summary) summary.incidents++;
           if (offline) resolveOfflineBreakdown(a);
         }
-      } else if (p.hunger >= 100) {
+      } else if (p.hunger >= 100 && !p.enduring) {
+        // Once he's already pushing through on an empty stomach, being stuck at
+        // 100% hunger is the expected (if risky) steady state, not a fresh crisis —
+        // don't re-open this same prompt every tick.
         if (offline) {
           if (state.money >= foodDeliveryPrice()) orderFoodDelivery();
           else startEnduring();
@@ -2632,7 +2707,7 @@ function renderPointPanel() {
   const visible = !!uiSelectedPointId && state;
   const point = visible ? pointById(uiSelectedPointId) : null;
   const p = state ? state.player : null;
-  const signature = visible ? `${uiSelectedPointId}|${p.positionId}|${p.status}|${p.jobs.map(j => j.id + ':' + j.pickedUp).join(',')}` : 'hidden';
+  const signature = visible ? `${uiSelectedPointId}|${p.positionId}|${p.status}|${p.jobs.map(j => j.id + ':' + j.pickedUp).join(',')}|${point && isPointOpenNow(point)}` : 'hidden';
   if (signature === lastPointPanelSignature) return;
   lastPointPanelSignature = signature;
 
@@ -2668,21 +2743,30 @@ function renderPointPanel() {
     return;
   }
 
+  const openNow = isPointOpenNow(point);
+  if (!openNow) {
+    const hoursLine = document.createElement('div');
+    hoursLine.className = 'job-sub';
+    hoursLine.textContent = `Закрыто (часы работы: ${formatHoursLabel(point)}) — откроется через ${formatMinutesDuration(minutesUntilOpen(point))}`;
+    panel.appendChild(hoursLine);
+    addBtn('⏳ Ждать открытия', () => { waitForOpening(point.id); renderAll(); });
+  }
+
   // jobs to pick up / deliver right here
   p.jobs.filter(j => !j.pickedUp && j.fromId === uiSelectedPointId).forEach(j => {
-    addBtn(`📦 Забрать «${j.itemName}»`, () => { pickUpJob(j.id); renderAll(); });
+    addBtn(`📦 Забрать «${j.itemName}»`, () => { pickUpJob(j.id); renderAll(); }, !openNow);
   });
   p.jobs.filter(j => j.pickedUp && j.toId === uiSelectedPointId).forEach(j => {
-    addBtn(`✅ Сдать «${j.itemName}»`, () => { deliverJob(j.id); renderAll(); });
+    addBtn(`✅ Сдать «${j.itemName}»`, () => { deliverJob(j.id); renderAll(); }, !openNow);
   });
 
-  if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop()); }
-  if (point.type === 'workshop') { addBtn('Открыть мастерскую', () => openWorkshop()); }
+  if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop(), !openNow); }
+  if (point.type === 'workshop') { addBtn('Открыть мастерскую', () => openWorkshop(), !openNow); }
 
   if (point.type === 'cafe' || point.type === 'waystop') {
     EAT_OPTIONS.forEach(opt => {
       const cost = EAT_PRICE_CAFE[opt.id];
-      addBtn(`${opt.label} — ${cost} ₽`, () => { startEating(opt.id); renderAll(); }, state.money < cost);
+      addBtn(`${opt.label} — ${cost} ₽`, () => { startEating(opt.id); renderAll(); }, state.money < cost || !openNow);
     });
   }
   if (point.type === 'home') {
@@ -2694,7 +2778,7 @@ function renderPointPanel() {
     if (spec.fuel !== 'legs') {
       const missing = spec.tank - p.vehicle.fuel;
       const cost = Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
-      addBtn(missing <= 0.01 ? 'Бак полон' : `⛽ Заправиться — ${cost} ₽`, () => { refuel(); renderAll(); }, missing <= 0.01 || state.money < cost);
+      addBtn(missing <= 0.01 ? 'Бак полон' : `⛽ Заправиться — ${cost} ₽`, () => { refuel(); renderAll(); }, missing <= 0.01 || state.money < cost || !openNow);
     }
   }
   if (point.type !== 'home' && vehicleCanSleepIn(vehicleSpec())) {
@@ -3045,6 +3129,7 @@ function renderAll() {
 
 let shopTab = 'vehicles';
 function openShop() {
+  if (!isPointOpenNow(pointById(state.player.positionId))) { toast('Закрыто — придётся подождать открытия'); return; }
   el('shop-tab-vehicles').classList.toggle('active', shopTab === 'vehicles');
   el('shop-tab-equipment').classList.toggle('active', shopTab === 'equipment');
   const citySpace = pointSpace(state.player.positionId);
@@ -3093,6 +3178,7 @@ function openShop() {
 }
 
 function openWorkshop() {
+  if (!isPointOpenNow(pointById(state.player.positionId))) { toast('Закрыто — придётся подождать открытия'); return; }
   el('workshop-condition').textContent = `Состояние техники: ${Math.round(state.player.vehicle.condition)}%`;
   el('btn-workshop-repair').textContent = `Полный ремонт — ${WORKSHOP_REPAIR_COST} ₽`;
   el('btn-workshop-repair').disabled = state.money < WORKSHOP_REPAIR_COST;
