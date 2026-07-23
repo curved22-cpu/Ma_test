@@ -308,7 +308,12 @@ function seededShuffle(arr, rng) {
 
 // Place all non-Rivnoe settlements on a jittered grid so they never overlap,
 // then shuffle which grid cell each tier lands in so big cities aren't
-// clustered in one corner of the country.
+// clustered in one corner of the country. A relaxation pass afterward pushes
+// apart any pair that still ended up too close, so nothing reads as crowded.
+// The northern strip is reserved for the mountain range, so settlements are
+// kept out of it (villages can still sit in the foothills just below it).
+const MOUNTAIN_BAND_Y = 12;
+const MIN_SETTLEMENT_DIST = 8.5;
 function buildSettlementPositions() {
   const placementRng = seededRandom(hashStr('settlement-grid'));
   const cols = 8, rows = 7;
@@ -325,14 +330,38 @@ function buildSettlementPositions() {
   ];
   const shuffledOrder = seededShuffle(order, placementRng);
   const pitchX = 100 / cols, pitchY = 100 / rows;
-  return shuffledOrder.map((s, i) => {
+  const settlements = shuffledOrder.map((s, i) => {
     const cell = shuffledCells[i];
-    const jx = (placementRng() - 0.5) * pitchX * 0.5;
-    const jy = (placementRng() - 0.5) * pitchY * 0.5;
+    const jx = (placementRng() - 0.5) * pitchX * 0.3;
+    const jy = (placementRng() - 0.5) * pitchY * 0.3;
     const x = clamp(cell.c * pitchX + pitchX / 2 + jx, 5, 95);
-    const y = clamp(cell.r * pitchY + pitchY / 2 + jy, 5, 95);
+    const y = clamp(cell.r * pitchY + pitchY / 2 + jy, MOUNTAIN_BAND_Y + 3, 95);
     return { id: `${s.tier}${i}`, name: s.name, tier: s.tier, x, y };
   });
+
+  for (let iter = 0; iter < 120; iter++) {
+    for (let i = 0; i < settlements.length; i++) {
+      for (let j = i + 1; j < settlements.length; j++) {
+        const a = settlements[i], b = settlements[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 0.0001 && dist < MIN_SETTLEMENT_DIST) {
+          const push = (MIN_SETTLEMENT_DIST - dist) / 2;
+          const ux = dx / dist, uy = dy / dist;
+          a.x -= ux * push; a.y -= uy * push;
+          b.x += ux * push; b.y += uy * push;
+        }
+      }
+    }
+    // Clamp back into bounds every iteration, not just at the end — otherwise a
+    // settlement pushed out of bounds mid-relaxation gets snapped back afterward
+    // and lands close to a neighbor again, undoing the spacing just gained.
+    settlements.forEach(s => {
+      s.x = clamp(s.x, 5, 95);
+      s.y = clamp(s.y, MOUNTAIN_BAND_Y + 3, 95);
+    });
+  }
+  return settlements;
 }
 
 const COUNTRY_CITIES = [
@@ -381,6 +410,29 @@ function buildCountryRoadEdges() {
   return edges;
 }
 const COUNTRY_ROAD_EDGES = buildCountryRoadEdges();
+
+// A road's look depends on what it connects: a route between two big
+// settlements is a proper highway (wide, straight-ish, bright); anything
+// touching a small town or village is a rural road (thinner, muted, winding).
+function countryEdgeClass(aId, bId) {
+  const big = t => t === 'metro' || t === 'big';
+  return (big(SETTLEMENT_TIER[aId]) && big(SETTLEMENT_TIER[bId])) ? 'highway' : 'rural';
+}
+function countryEdgeGeom(aId, bId) {
+  return countryEdgeClass(aId, bId) === 'highway' ? { segments: 5, maxOffset: 4 } : { segments: 8, maxOffset: 9 };
+}
+
+// Memoized once — the country road network never changes at runtime.
+let countryRoadPolylinesCache = null;
+function getCountryRoadPolylines() {
+  if (countryRoadPolylinesCache) return countryRoadPolylinesCache;
+  countryRoadPolylinesCache = COUNTRY_ROAD_EDGES.map(([aId, bId]) => {
+    const geom = countryEdgeGeom(aId, bId);
+    const poly = getEdgePolyline('country', aId, bId, cityMeta(aId), cityMeta(bId), geom.segments, geom.maxOffset);
+    return { aId, bId, cls: countryEdgeClass(aId, bId), poly };
+  });
+  return countryRoadPolylinesCache;
+}
 
 // Every city (incl. procedurally generated ones) gets: a namespaced point set,
 // a namespaced edge list, and exactly one "gate" point wired to the country
@@ -452,22 +504,43 @@ function pickUnusedName(kind, rng, used) {
   return fallback;
 }
 
-function buildSettlementLayout(cityId, tier) {
-  const rng = seededRandom(hashStr('layout:' + cityId));
-  const blueprint = TIER_BLUEPRINTS[tier];
-  const used = new Set();
-  const points = [];
-  let n = 0;
-  const addPoint = (kind) => {
-    const name = pickUnusedName(kind, rng, used);
-    points.push({ id: `pt${n++}`, name, type: SETTLEMENT_POINT_TYPE[kind], x: 12 + rng() * 76, y: 12 + rng() * 76 });
-  };
-  blueprint.points.forEach(addPoint);
-  for (let i = 0; i < blueprint.cafes; i++) addPoint('cafe');
-  if (blueprint.shop) addPoint('shop');
-  if (blueprint.workshop) addPoint('workshop');
-  if (rng() < blueprint.gasChance) addPoint('gas');
-
+// Big cities/metros get a laid-out street grid (points snapped to a coarse
+// grid, connected in straight rows/columns like real city blocks); small
+// towns and villages keep the organic scatter-and-chain layout they always
+// had, which reads as winding country lanes once rendered.
+function buildGridPoints(kinds, rng, used) {
+  const cols = Math.ceil(Math.sqrt(kinds.length));
+  const rows = Math.ceil(kinds.length / cols);
+  const marginMin = 16, marginMax = 84;
+  const cellW = (marginMax - marginMin) / cols, cellH = (marginMax - marginMin) / rows;
+  return kinds.map((kind, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const x = marginMin + col * cellW + cellW / 2 + (rng() - 0.5) * cellW * 0.12;
+    const y = marginMin + row * cellH + cellH / 2 + (rng() - 0.5) * cellH * 0.12;
+    return { id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x, y, gridCol: col, gridRow: row };
+  });
+}
+function buildGridEdges(points) {
+  const edges = [];
+  const byRow = {}, byCol = {};
+  points.forEach(p => {
+    (byRow[p.gridRow] = byRow[p.gridRow] || []).push(p);
+    (byCol[p.gridCol] = byCol[p.gridCol] || []).push(p);
+  });
+  Object.values(byRow).forEach(row => {
+    row.sort((a, b) => a.gridCol - b.gridCol);
+    for (let i = 1; i < row.length; i++) edges.push([row[i - 1].id, row[i].id]);
+  });
+  Object.values(byCol).forEach(col => {
+    col.sort((a, b) => a.gridRow - b.gridRow);
+    for (let i = 1; i < col.length; i++) edges.push([col[i - 1].id, col[i].id]);
+  });
+  return edges;
+}
+function buildOrganicPoints(kinds, rng, used) {
+  return kinds.map((kind, i) => ({ id: `pt${i}`, name: pickUnusedName(kind, rng, used), type: SETTLEMENT_POINT_TYPE[kind], x: 12 + rng() * 76, y: 12 + rng() * 76 }));
+}
+function buildOrganicEdges(points, rng) {
   const edges = [];
   for (let i = 1; i < points.length; i++) edges.push([points[i - 1].id, points[i].id]);
   const extra = 1 + Math.floor(rng() * 2);
@@ -476,6 +549,22 @@ function buildSettlementLayout(cityId, tier) {
     const b = points[Math.floor(rng() * points.length)];
     if (a.id !== b.id) edges.push([a.id, b.id]);
   }
+  return edges;
+}
+
+function buildSettlementLayout(cityId, tier) {
+  const rng = seededRandom(hashStr('layout:' + cityId));
+  const blueprint = TIER_BLUEPRINTS[tier];
+  const used = new Set();
+  const kinds = [...blueprint.points];
+  for (let i = 0; i < blueprint.cafes; i++) kinds.push('cafe');
+  if (blueprint.shop) kinds.push('shop');
+  if (blueprint.workshop) kinds.push('workshop');
+  if (rng() < blueprint.gasChance) kinds.push('gas');
+
+  const isGrid = tier === 'big' || tier === 'metro';
+  const points = isGrid ? buildGridPoints(kinds, rng, used) : buildOrganicPoints(kinds, rng, used);
+  const edges = isGrid ? buildGridEdges(points) : buildOrganicEdges(points, rng);
   return { points, edges, anchorId: points[0].id };
 }
 
@@ -557,7 +646,22 @@ function getMapDecor(mapKey) {
     const b = vertical ? { x: rng() * 100, y: 100 } : { x: 100, y: rng() * 100 };
     rivers.push(windingPolyline(`${mapKey}:river${i}`, a, b, 9, 13));
   }
-  const decor = { forests, rivers };
+  const lakes = [];
+  const lakeCount = rng() < 0.55 ? 1 : 0;
+  for (let i = 0; i < lakeCount; i++) lakes.push({ x: 10 + rng() * 80, y: 10 + rng() * 80, r: 6 + rng() * 6 });
+  // Marshes cluster near riverbanks — realistic, and ties the decor together.
+  const marshes = [];
+  rivers.forEach((river, ri) => {
+    const marshCount = rng() < 0.6 ? 1 : 0;
+    for (let i = 0; i < marshCount; i++) {
+      const t = 0.15 + rng() * 0.7;
+      const spot = pointOnPolyline(river, t);
+      const angle = rng() * Math.PI * 2;
+      const dist = 2 + rng() * 3;
+      marshes.push({ x: clamp(spot.x + Math.cos(angle) * dist, 2, 98), y: clamp(spot.y + Math.sin(angle) * dist, 2, 98), r: 4 + rng() * 4 });
+    }
+  });
+  const decor = { forests, rivers, lakes, marshes };
   DECOR_CACHE[mapKey] = decor;
   return decor;
 }
@@ -567,7 +671,8 @@ function getMapDecor(mapKey) {
 COUNTRY_ROAD_EDGES.forEach(([cityAId, cityBId]) => {
   const a = cityMeta(cityAId), b = cityMeta(cityBId);
   const edgeKey = [cityAId, cityBId].slice().sort().join('-');
-  const fullPoly = windingPolyline(`country:${edgeKey}`, a, b, 7, 7);
+  const geom = countryEdgeGeom(cityAId, cityBId);
+  const fullPoly = windingPolyline(`country:${edgeKey}`, a, b, geom.segments, geom.maxOffset);
   const totalLenKm = polylineLengthUnits(fullPoly) * COUNTRY_KM_PER_UNIT;
   const stopCount = clamp(Math.floor(totalLenKm / 45), 0, 3);
   const fractions = [];
@@ -610,7 +715,15 @@ function edgeCoord(id, space) {
   return { x: pt.x, y: pt.y };
 }
 function edgeScale(space) { return space === 'country' ? COUNTRY_KM_PER_UNIT : CITY_KM_PER_UNIT; }
-function edgeJitter(space) { return space === 'country' ? [7, 7] : [5, 5]; }
+// Big cities/metros have laid-out street grids (straight block roads); small
+// towns and villages grew organically (winding lanes). This same jitter feeds
+// both the actual travel-distance math and the road rendering, so the two
+// always agree with each other.
+function edgeJitter(space) {
+  if (space === 'country') return [7, 7];
+  const tier = SETTLEMENT_TIER[space] || 'village';
+  return (tier === 'big' || tier === 'metro') ? [1, 0] : [5, 5];
+}
 
 function segDist(aId, bId) {
   const space = edgeSpace(aId, bId);
@@ -716,6 +829,20 @@ function positionAlongPath(path, fracKm, totalKm) {
 function isNight() {
   const minuteOfDay = (state.gameTime + DAY_START_OFFSET) % 1440;
   return minuteOfDay >= NIGHT_START_MIN || minuteOfDay < NIGHT_END_MIN;
+}
+
+const MAX_NIGHT_ALPHA = 0.6;
+// A smooth dusk → deep night → dawn curve entirely inside the mechanical night
+// window: darkness peaks exactly at its midpoint (02:00) and fades back to
+// nothing right at the window's edges (22:00 / 06:00), so it lines up with the
+// existing night-speed penalty instead of just being a hard on/off tint.
+function nightAlpha() {
+  const minuteOfDay = (state.gameTime + DAY_START_OFFSET) % 1440;
+  const nightMid = (NIGHT_START_MIN + (NIGHT_END_MIN + 1440)) / 2 % 1440; // 02:00
+  const halfWindow = ((NIGHT_END_MIN + 1440) - NIGHT_START_MIN) / 2; // 4h
+  const diff = Math.abs(((minuteOfDay - nightMid + 720 + 1440) % 1440) - 720);
+  const t = clamp(1 - diff / halfWindow, 0, 1);
+  return t * MAX_NIGHT_ALPHA;
 }
 
 // ---------- state ----------
@@ -1831,15 +1958,28 @@ function strokePolyline(poly, toPx) {
   ctx.stroke();
 }
 
-function drawDecor(decor, toPx, scalePxPerUnit) {
-  decor.forests.forEach(f => {
-    ctx.fillStyle = 'rgba(70,130,70,0.16)';
-    const blobs = [[0, 0], [0.5, 0.3], [-0.4, 0.35], [0.2, -0.4]];
-    blobs.forEach(([dx, dy]) => {
-      const [x, y] = toPx(f.x + dx * f.r * 0.5, f.y + dy * f.r * 0.5);
-      ctx.beginPath(); ctx.arc(x, y, f.r * 0.6 * scalePxPerUnit, 0, Math.PI * 2); ctx.fill();
-    });
+const BLOB_OFFSETS = [[0, 0], [0.5, 0.3], [-0.4, 0.35], [0.2, -0.4], [-0.3, -0.25]];
+function drawBlobCluster(x, y, r, toPx, scalePxPerUnit, fillStyle, offsets) {
+  ctx.fillStyle = fillStyle;
+  (offsets || BLOB_OFFSETS).forEach(([dx, dy]) => {
+    const [px, py] = toPx(x + dx * r * 0.5, y + dy * r * 0.5);
+    ctx.beginPath(); ctx.arc(px, py, r * 0.6 * scalePxPerUnit, 0, Math.PI * 2); ctx.fill();
   });
+}
+
+function drawDecor(decor, toPx, scalePxPerUnit) {
+  decor.forests.forEach(f => drawBlobCluster(f.x, f.y, f.r, toPx, scalePxPerUnit, 'rgba(70,130,70,0.16)'));
+
+  (decor.lakes || []).forEach(l => {
+    drawBlobCluster(l.x, l.y, l.r * 1.3, toPx, scalePxPerUnit, 'rgba(45,90,140,0.55)');
+    drawBlobCluster(l.x, l.y, l.r * 0.85, toPx, scalePxPerUnit, 'rgba(80,140,190,0.5)');
+  });
+
+  (decor.marshes || []).forEach(m => {
+    drawBlobCluster(m.x, m.y, m.r, toPx, scalePxPerUnit, 'rgba(95,105,55,0.35)');
+    drawBlobCluster(m.x, m.y, m.r * 0.6, toPx, scalePxPerUnit, 'rgba(120,130,70,0.3)', [[0.2, 0], [-0.3, 0.2]]);
+  });
+
   decor.rivers.forEach(river => {
     ctx.strokeStyle = 'rgba(70,120,190,0.35)';
     ctx.lineWidth = 6;
@@ -1851,18 +1991,152 @@ function drawDecor(decor, toPx, scalePxPerUnit) {
   });
 }
 
+// ---------- biome background, mountains, bridges ----------
+
+let biomePatchesCache = null;
+function getBiomePatches() {
+  if (biomePatchesCache) return biomePatchesCache;
+  const rng = seededRandom(hashStr('biome-patches'));
+  const colors = ['rgba(150,140,70,0.16)', 'rgba(50,90,55,0.18)', 'rgba(130,155,115,0.14)'];
+  const patches = [];
+  for (let i = 0; i < 8; i++) {
+    patches.push({ x: 6 + rng() * 88, y: MOUNTAIN_BAND_Y + 4 + rng() * 82, r: 11 + rng() * 15, color: pickSeeded(colors, rng) });
+  }
+  biomePatchesCache = patches;
+  return patches;
+}
+
+// A soft vertical climate gradient (snowy north near the mountains, temperate
+// plains through the middle, dry steppe toward the south) plus a handful of
+// large translucent patches so it doesn't read as a flat vector band.
+function drawBiomeBackground(toPxWorld, w, h) {
+  const [x0, y0] = toPxWorld(50, 0);
+  const [x1, y1] = toPxWorld(50, 100);
+  const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+  grad.addColorStop(0, '#a9bcc6');
+  grad.addColorStop(0.12, '#7fa082');
+  grad.addColorStop(0.38, '#3f6b42');
+  grad.addColorStop(0.72, '#436e3f');
+  grad.addColorStop(1, '#84884a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+  getBiomePatches().forEach(p => drawBlobCluster(p.x, p.y, p.r, toPxWorld, camera.zoom, p.color));
+}
+
+// A single jagged silhouette (zigzagging peak/valley/peak/valley) along the
+// country's northern edge, with snow caps on the taller peaks.
+const MOUNTAIN_BASE_Y = 7;
+const MOUNTAIN_RANGE = (() => {
+  const rng = seededRandom(hashStr('mountains'));
+  const count = 20;
+  const peaks = [];
+  for (let i = 0; i <= count; i++) {
+    const x = (i / count) * 112 - 6;
+    const tall = i % 2 === 0;
+    peaks.push({ x, h: tall ? 9 + rng() * 6 : 3 + rng() * 3 });
+  }
+  return peaks;
+})();
+function drawMountains(toPxWorld) {
+  ctx.fillStyle = 'rgba(58,64,76,0.65)';
+  ctx.beginPath();
+  const first = toPxWorld(MOUNTAIN_RANGE[0].x, MOUNTAIN_BASE_Y);
+  ctx.moveTo(first[0], first[1]);
+  MOUNTAIN_RANGE.forEach(pk => {
+    const [px, py] = toPxWorld(pk.x, MOUNTAIN_BASE_Y - pk.h);
+    ctx.lineTo(px, py);
+  });
+  const last = toPxWorld(MOUNTAIN_RANGE[MOUNTAIN_RANGE.length - 1].x, MOUNTAIN_BASE_Y);
+  ctx.lineTo(last[0], last[1]);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(238,242,248,0.9)';
+  MOUNTAIN_RANGE.forEach(pk => {
+    if (pk.h < 8) return;
+    const tip = toPxWorld(pk.x, MOUNTAIN_BASE_Y - pk.h);
+    const left = toPxWorld(pk.x - 1.6, MOUNTAIN_BASE_Y - pk.h * 0.7);
+    const right = toPxWorld(pk.x + 1.6, MOUNTAIN_BASE_Y - pk.h * 0.7);
+    ctx.beginPath(); ctx.moveTo(tip[0], tip[1]); ctx.lineTo(left[0], left[1]); ctx.lineTo(right[0], right[1]); ctx.closePath(); ctx.fill();
+  });
+}
+
+// Where a road crosses a river, drop a short bridge deck at the exact
+// intersection point, angled along the road so it reads as spanning the water.
+function segIntersect(p1, p2, p3, p4) {
+  const d1x = p2.x - p1.x, d1y = p2.y - p1.y;
+  const d2x = p4.x - p3.x, d2y = p4.y - p3.y;
+  const denom = d1x * d2y - d1y * d2x;
+  if (Math.abs(denom) < 1e-9) return null;
+  const t = ((p3.x - p1.x) * d2y - (p3.y - p1.y) * d2x) / denom;
+  const u = ((p3.x - p1.x) * d1y - (p3.y - p1.y) * d1x) / denom;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return { x: p1.x + d1x * t, y: p1.y + d1y * t, angle: Math.atan2(d1y, d1x) };
+}
+function computeBridges(rivers, roadPolylines) {
+  const bridges = [];
+  rivers.forEach(river => {
+    for (let i = 0; i < river.length - 1; i++) {
+      roadPolylines.forEach(poly => {
+        for (let j = 0; j < poly.length - 1; j++) {
+          const hit = segIntersect(river[i], river[i + 1], poly[j], poly[j + 1]);
+          if (hit) bridges.push(hit);
+        }
+      });
+    }
+  });
+  return bridges;
+}
+let countryBridgesCache = null;
+function getCountryBridges() {
+  if (countryBridgesCache) return countryBridgesCache;
+  const decor = getMapDecor('country');
+  const roadPolys = getCountryRoadPolylines().map(r => r.poly);
+  countryBridgesCache = computeBridges(decor.rivers, roadPolys);
+  return countryBridgesCache;
+}
+const cityBridgesCache = {};
+function getCityBridges(cityId, points, edges) {
+  if (cityBridgesCache[cityId]) return cityBridgesCache[cityId];
+  const decor = getMapDecor('city:' + cityId);
+  const byId = id => points.find(p => p.id === id);
+  const [seg, off] = edgeJitter(cityId);
+  const roadPolys = edges.map(([aId, bId]) => getEdgePolyline(cityId, aId, bId, byId(aId), byId(bId), seg, off));
+  cityBridgesCache[cityId] = computeBridges(decor.rivers, roadPolys);
+  return cityBridgesCache[cityId];
+}
+function drawBridges(bridges, toPx, scalePxPerUnit) {
+  bridges.forEach(b => {
+    const [px, py] = toPx(b.x, b.y);
+    const len = 3.2 * scalePxPerUnit, wid = 1.15 * scalePxPerUnit;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(b.angle);
+    ctx.fillStyle = '#8a7256';
+    ctx.strokeStyle = '#5a4835';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-len / 2, -wid / 2, len, wid, Math.min(wid * 0.3, len * 0.3));
+    else ctx.rect(-len / 2, -wid / 2, len, wid);
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  });
+}
+
 function drawRoads(mapKey, points, edges, toPx) {
   const byId = id => points.find(p => p.id === id);
-  const [seg, off] = edgeJitter(mapKey === 'country' ? 'country' : 'city');
-  ctx.strokeStyle = '#333c4a';
-  ctx.lineWidth = 4;
+  const [seg, off] = edgeJitter(mapKey);
+  const tier = SETTLEMENT_TIER[mapKey] || 'village';
+  const isGrid = tier === 'big' || tier === 'metro';
+  ctx.strokeStyle = isGrid ? '#2c3038' : '#3a2e22';
+  ctx.lineWidth = isGrid ? 4 : 3;
   ctx.lineCap = 'round';
   edges.forEach(([aId, bId]) => {
     const a = byId(aId), b = byId(bId);
     const poly = getEdgePolyline(mapKey, aId, bId, a, b, seg, off);
     strokePolyline(poly, toPx);
   });
-  ctx.strokeStyle = '#4a5568';
+  ctx.strokeStyle = isGrid ? '#828d9c' : '#a9895f';
   ctx.lineWidth = 1;
   edges.forEach(([aId, bId]) => {
     const a = byId(aId), b = byId(bId);
@@ -2067,6 +2341,7 @@ function drawCityDetail(cityId, toPxWorld, w, h) {
 
   drawDecor(getMapDecor('city:' + cityId), toPx, scalePxPerUnit);
   drawRoads(cityId, points, edges, toPx);
+  drawBridges(getCityBridges(cityId, points, edges), toPx, scalePxPerUnit);
 
   points.forEach(pnt => {
     if (pnt.type === 'gate') return;
@@ -2126,18 +2401,30 @@ function drawWorld() {
   const toPxWorld = (wx, wy) => worldToScreen(wx, wy, w, h);
   lastClickables = {};
 
+  drawBiomeBackground(toPxWorld, w, h);
+  drawMountains(toPxWorld);
   drawDecor(getMapDecor('country'), toPxWorld, camera.zoom);
 
-  ctx.strokeStyle = '#333c4a'; ctx.lineWidth = 5; ctx.lineCap = 'round';
-  COUNTRY_ROAD_EDGES.forEach(([aId, bId]) => {
-    const a = cityMeta(aId), b = cityMeta(bId);
-    strokePolyline(getEdgePolyline('country', aId, bId, a, b, 7, 7), toPxWorld);
-  });
-  ctx.strokeStyle = '#4a5568'; ctx.lineWidth = 1.5;
-  COUNTRY_ROAD_EDGES.forEach(([aId, bId]) => {
-    const a = cityMeta(aId), b = cityMeta(bId);
-    strokePolyline(getEdgePolyline('country', aId, bId, a, b, 7, 7), toPxWorld);
-  });
+  const roadPolys = getCountryRoadPolylines();
+  const ruralPolys = roadPolys.filter(r => r.cls === 'rural').map(r => r.poly);
+  const highwayPolys = roadPolys.filter(r => r.cls === 'highway').map(r => r.poly);
+
+  ctx.lineCap = 'round';
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#333c4a'; ctx.lineWidth = 4;
+  ruralPolys.forEach(p => strokePolyline(p, toPxWorld));
+  ctx.strokeStyle = '#6b7280'; ctx.lineWidth = 1.4;
+  ruralPolys.forEach(p => strokePolyline(p, toPxWorld));
+
+  ctx.strokeStyle = '#4a3a12'; ctx.lineWidth = 6;
+  highwayPolys.forEach(p => strokePolyline(p, toPxWorld));
+  ctx.strokeStyle = '#e2a83b'; ctx.lineWidth = 3.6;
+  highwayPolys.forEach(p => strokePolyline(p, toPxWorld));
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1; ctx.setLineDash([5, 5]);
+  highwayPolys.forEach(p => strokePolyline(p, toPxWorld));
+  ctx.setLineDash([]);
+
+  drawBridges(getCountryBridges(), toPxWorld, camera.zoom);
 
   Object.values(WORLD_POINTS).filter(p => p.type === 'waystop').forEach(stop => {
     const [x, y] = toPxWorld(stop.x, stop.y);
@@ -2183,6 +2470,12 @@ function drawWorld() {
     ctx.fillStyle = isProblem ? '#d9534f' : '#7fd17f';
     ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#14181f'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+
+  const alpha = nightAlpha();
+  if (alpha > 0.01) {
+    ctx.fillStyle = `rgba(8,12,30,${alpha})`;
+    ctx.fillRect(0, 0, w, h);
   }
 }
 
