@@ -1233,6 +1233,7 @@ function takeJob(jobId) {
   if (pendingCount >= MAX_PENDING_JOBS) { toast(`Нельзя резервировать больше ${MAX_PENDING_JOBS} заказов одновременно`); return; }
   const idx = state.availableJobs.findIndex(j => j.id === jobId);
   if (idx === -1) return;
+  if (!jobPickupReachable(state.availableJobs[idx])) { toast('Пешком до места забора не дойти — этот заказ недоступен'); return; }
   const job = state.availableJobs.splice(idx, 1)[0];
   state.player.jobs.push(job);
   log(`Взял заказ: ${job.itemName} (${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)}), ${job.payout} ₽`);
@@ -2792,14 +2793,27 @@ function renderCargoPanel() {
 
 let lastOrdersSignature = null;
 let lastOrdersRenderRealTime = 0;
+// A pickup a foot courier can't practically walk to right now (wrong settlement
+// entirely) — unlike weight/equipment mismatches, which get re-validated at the
+// actual pickup moment and can still be reserved ahead of an upgrade, this one
+// blocks taking the job outright: there's no point reserving a delivery you have
+// no way of even starting.
+function jobPickupReachable(job) {
+  const spec = vehicleSpec();
+  return spec.cat !== 'foot' || pointSpace(job.fromId) === pointSpace(state.player.positionId);
+}
+
 function jobFitsVehicle(job) {
   const spec = vehicleSpec();
   const weightOk = cargoWeightKg() + job.weightKg <= spec.kg;
   const volumeOk = cargoVolumeL() + job.volumeL <= spec.l;
   const equipOk = hasRequiredEquipment(job.storage);
   // Walking between settlements is technically possible (rest stops exist) but absurd —
-  // a job only "fits" on foot if pickup and drop-off are in the same settlement.
-  const rangeOk = spec.cat !== 'foot' || pointSpace(job.fromId) === pointSpace(job.toId);
+  // a job only "fits" on foot if pickup and drop-off are in the same settlement AND
+  // that settlement is the one the courier is actually standing in right now (otherwise
+  // he can't even reach the pickup point to begin with).
+  const rangeOk = spec.cat !== 'foot'
+    || (pointSpace(job.fromId) === pointSpace(job.toId) && pointSpace(job.fromId) === pointSpace(state.player.positionId));
   return weightOk && volumeOk && equipOk && rangeOk;
 }
 
@@ -2852,13 +2866,13 @@ function renderOrdersList() {
     const pickupDistTag = pickupKm !== null ? ` · забрать за ${formatKm(pickupKm)} км` : '';
     info.innerHTML = `<div>${STORAGE_GLYPH[job.storage]} <b>${job.itemName}</b> — ${job.weightKg} кг / ${formatVolumeM3(job.volumeL)}</div>` +
       `<div class="job-sub">${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)} · ${job.distanceKm} км${pickupDistTag}</div>` +
-      `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!fits ? ' · не подходит' : ''}</div>`;
+      `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!jobPickupReachable(job) ? ' · пешком туда не дойти' : !fits ? ' · не подходит' : ''}</div>`;
     const pay = document.createElement('span');
     pay.className = 'job-pay';
     pay.textContent = `${job.payout} ₽`;
     const btn = document.createElement('button');
     btn.textContent = 'Взять';
-    btn.disabled = !canTakeMore;
+    btn.disabled = !canTakeMore || !jobPickupReachable(job);
     btn.onclick = () => { takeJob(job.id); renderAll(); };
     li.append(info, pay, btn);
     ul.appendChild(li);
