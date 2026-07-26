@@ -1525,22 +1525,6 @@ function refuel() {
   log(`Заправился (${cost} ₽)`, { silent: true });
 }
 
-// ---------- business hours: waiting for a closed point to open ----------
-
-function waitForOpening(pointId) {
-  const p = state.player;
-  if (p.status !== 'idle' || p.positionId !== pointId) return;
-  const point = pointById(pointId);
-  if (isPointOpenNow(point)) return;
-  let guard = 0;
-  while (!isPointOpenNow(point) && state.pendingActions.length === 0 && !state.gameOver && guard < 100) {
-    simulateTick(Math.min(20, Math.max(1, minutesUntilOpen(point))));
-    guard++;
-  }
-  log(isPointOpenNow(point) ? `Дождался открытия: ${point.name}` : 'Ожидание прервано — что-то случилось', { silent: true });
-  saveGame();
-}
-
 // ---------- travel ----------
 
 function currentEdgeState() {
@@ -2893,10 +2877,6 @@ function renderPointPanel() {
     return;
   }
 
-  if (!openNow) {
-    addBtn('⏳ Ждать открытия', () => { waitForOpening(point.id); renderAll(); });
-  }
-
   // jobs to pick up / deliver right here
   p.jobs.filter(j => !j.pickedUp && j.fromId === uiSelectedPointId).forEach(j => {
     addBtn(`📦 Забрать «${j.itemName}»`, () => { pickUpJob(j.id); renderAll(); }, !openNow);
@@ -3209,21 +3189,27 @@ function openProblemModal(action) {
 }
 
 let lastToastSignature = null;
+// Every toast (not just the persistent offline-summary ones) can be tapped
+// away early — leavingToastIds tracks that regardless of whether it was a
+// manual tap or the toast's own natural expiry countdown.
+function toastIsLeaving(t, now) {
+  return leavingToastIds.has(t.id) || (!t.persistent && now >= t.expiresAt - TOAST_EXIT_MS);
+}
 function renderToasts() {
   const now = Date.now();
   toasts = toasts.filter(t => t.persistent || t.expiresAt > now);
-  const signature = toasts.map(t => `${t.id}:${t.persistent ? leavingToastIds.has(t.id) : now >= t.expiresAt - TOAST_EXIT_MS}`).join(',');
+  const signature = toasts.map(t => `${t.id}:${toastIsLeaving(t, now)}`).join(',');
   if (signature === lastToastSignature) return;
   lastToastSignature = signature;
 
   const area = el('toast-area');
   area.innerHTML = '';
   toasts.forEach(t => {
-    const leaving = t.persistent ? leavingToastIds.has(t.id) : now >= t.expiresAt - TOAST_EXIT_MS;
+    const leaving = toastIsLeaving(t, now);
     const div = document.createElement('div');
     div.className = 'toast' + (t.persistent ? ' toast-persistent' : '');
     div.textContent = t.text;
-    if (t.persistent && !leaving) div.onclick = () => dismissToast(t.id);
+    if (!leaving) div.onclick = () => dismissToast(t.id);
     area.appendChild(div);
     if (leaving) {
       // Fly precisely into the diary icon regardless of screen size: measure both

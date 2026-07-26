@@ -353,10 +353,10 @@ html, body { height: 100%; margin: 0; }
   text-align: center;
   box-shadow: 0 10px 34px rgba(0,0,0,0.55);
   animation: toast-in 0.25s ease-out;
-}
-.toast-persistent {
   pointer-events: auto;
   cursor: pointer;
+}
+.toast-persistent {
   border-color: #d99c3f;
 }
 .toast-leaving {
