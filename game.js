@@ -918,7 +918,6 @@ function formatHoursLabel(point) {
 // ---------- state ----------
 
 let state = null;
-let jobIdSeq = 1;
 let actionIdSeq = 1;
 let lastFrameTs = null;
 let autosaveAccum = 0;
@@ -1031,6 +1030,7 @@ function newGameState() {
       enduring: false,
     },
     availableJobs: [],
+    jobIdSeq: 1, // persisted so ids never collide across a page reload (see migrateEconomyFields)
     eventLog: [],
     pendingActions: [],
     stats: { jobsCompleted: 0, totalEarned: 0 },
@@ -1082,6 +1082,26 @@ function migrateEconomyFields() {
   if (typeof state.player.sleepyGrace !== 'number') state.player.sleepyGrace = 0;
   delete state.player.fatigue;
   delete state.player.warnedFatigue;
+
+  // jobIdSeq used to be a bare module variable that reset to 1 on every page
+  // reload while old jobs (with higher ids) stayed in the save — new jobs could
+  // then collide in id with still-unclaimed old ones, and every id-lookup
+  // (takeJob/pickUpJob/deliverJob/refuseJob) would silently act on whichever one
+  // happened to come first. Recompute it from the highest id actually present so
+  // it can never collide, whether this save predates the field or already has dupes.
+  const maxExistingJobId = Math.max(0, ...state.availableJobs.map(j => j.id), ...state.player.jobs.map(j => j.id));
+  if (typeof state.jobIdSeq !== 'number' || state.jobIdSeq <= maxExistingJobId) {
+    state.jobIdSeq = maxExistingJobId + 1;
+  }
+  // A save already affected by the old bug may have two different jobs sharing
+  // one id right now — reassign every id after the first occurrence so lookups
+  // by id are unambiguous again (a taken job's own id must stay put, so only
+  // availableJobs — never player.jobs — gets touched).
+  const seenJobIds = new Set(state.player.jobs.map(j => j.id));
+  state.availableJobs.forEach(job => {
+    if (seenJobIds.has(job.id)) job.id = state.jobIdSeq++;
+    seenJobIds.add(job.id);
+  });
 }
 
 function log(text, opts) {
@@ -1191,7 +1211,7 @@ function generateJob() {
   const weightSurcharge = Math.round(weightKg * 3);
   const payout = Math.round(120 + distanceKm * 20 + storageSurcharge + urgencySurcharge + weightSurcharge + rand(-15, 25));
   return {
-    id: jobIdSeq++, fromId, toId,
+    id: state.jobIdSeq++, fromId, toId,
     itemName: template.name, storage: template.storage, weightKg, volumeL,
     urgencyKey, urgencyLabel: urgency.label,
     deadlineReal: urgency.windowRealMs === Infinity ? null : Date.now() + urgency.windowRealMs,
@@ -1237,7 +1257,7 @@ function generateFittingJob(remainingKg, remainingL) {
   const payout = Math.round(120 + distanceKm * 20 + urgencySurcharge + weightSurcharge + rand(-15, 25));
 
   return {
-    id: jobIdSeq++, fromId, toId,
+    id: state.jobIdSeq++, fromId, toId,
     itemName: template.name, storage: template.storage, weightKg, volumeL,
     urgencyKey, urgencyLabel: urgency.label,
     deadlineReal: urgency.windowRealMs === Infinity ? null : Date.now() + urgency.windowRealMs,
@@ -3426,7 +3446,6 @@ el('btn-bankruptcy-restart').onclick = () => {
   el('bankruptcy-modal').classList.add('hidden');
   bankruptcyShown = false;
   state = newGameState();
-  jobIdSeq = 1;
   initDailyEconomy();
   saveGame();
   showGameScreen();
@@ -3442,7 +3461,6 @@ el('btn-starved-restart').onclick = () => {
   el('starved-modal').classList.add('hidden');
   starvedShown = false;
   state = newGameState();
-  jobIdSeq = 1;
   initDailyEconomy();
   saveGame();
   showGameScreen();
@@ -3450,7 +3468,6 @@ el('btn-starved-restart').onclick = () => {
 
 el('btn-new-game').onclick = () => {
   state = newGameState();
-  jobIdSeq = 1;
   bankruptcyShown = false;
   starvedShown = false;
   initDailyEconomy();
