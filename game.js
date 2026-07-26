@@ -2713,11 +2713,21 @@ function renderPointPanel() {
 
   if (!visible || !point || point.type === 'gate') { panel.classList.add('hidden'); return; }
   const here = p.status !== 'moving' && p.positionId === uiSelectedPointId;
+  const openNow = isPointOpenNow(point);
   panel.classList.remove('hidden');
   panel.innerHTML = '';
   const label = document.createElement('div');
   label.textContent = point.name + (here ? ' (ты тут)' : '');
   panel.appendChild(label);
+
+  if (point.hours) {
+    const hoursLine = document.createElement('div');
+    hoursLine.className = 'job-sub';
+    hoursLine.textContent = openNow
+      ? `Часы работы: ${formatHoursLabel(point)}`
+      : `Закрыто (часы работы: ${formatHoursLabel(point)}) — откроется через ${formatMinutesDuration(minutesUntilOpen(point))}`;
+    panel.appendChild(hoursLine);
+  }
 
   const buttons = document.createElement('div');
   buttons.className = 'point-panel-buttons';
@@ -2743,12 +2753,7 @@ function renderPointPanel() {
     return;
   }
 
-  const openNow = isPointOpenNow(point);
   if (!openNow) {
-    const hoursLine = document.createElement('div');
-    hoursLine.className = 'job-sub';
-    hoursLine.textContent = `Закрыто (часы работы: ${formatHoursLabel(point)}) — откроется через ${formatMinutesDuration(minutesUntilOpen(point))}`;
-    panel.appendChild(hoursLine);
     addBtn('⏳ Ждать открытия', () => { waitForOpening(point.id); renderAll(); });
   }
 
