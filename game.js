@@ -2393,20 +2393,40 @@ const CITY_BG_MAX_BLUR_PX = 10;
 function cityBgBlendT() {
   return clamp((camera.zoom - CITY_BG_BLEND_START_ZOOM) / (CITY_BG_BLEND_END_ZOOM - CITY_BG_BLEND_START_ZOOM), 0, 1);
 }
+// A hard-edged square patch reads as an obvious seam against the surrounding
+// country texture, so the city image is pre-masked once (cached) with a radial
+// alpha falloff — it fades out to fully transparent well before its own edges,
+// blending softly into whatever's underneath instead of cutting off sharply.
+const cityBgMaskedCache = {};
+function getCityBgMasked(cityId) {
+  const entry = getCityBgImage(cityId);
+  if (!entry || !entry.loaded) return null;
+  if (cityBgMaskedCache[cityId]) return cityBgMaskedCache[cityId];
+  const size = entry.img.naturalWidth || 1024;
+  const off = document.createElement('canvas');
+  off.width = size; off.height = size;
+  const octx = off.getContext('2d');
+  octx.drawImage(entry.img, 0, 0, size, size);
+  octx.globalCompositeOperation = 'destination-in';
+  const grad = octx.createRadialGradient(size / 2, size / 2, size * 0.36, size / 2, size / 2, size * 0.5);
+  grad.addColorStop(0, 'rgba(0,0,0,1)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  octx.fillStyle = grad;
+  octx.fillRect(0, 0, size, size);
+  cityBgMaskedCache[cityId] = off;
+  return off;
+}
 function drawCityBackgroundPatch(c, toPxWorld) {
-  const entry = getCityBgImage(c.id);
-  if (!entry || !entry.loaded) return;
+  const masked = getCityBgMasked(c.id);
+  if (!masked) return;
   const t = cityBgBlendT();
   if (t <= 0.01) return;
   const [x0, y0] = toPxWorld(c.x - CITY_WORLD_RADIUS, c.y - CITY_WORLD_RADIUS);
   const size = CITY_WORLD_RADIUS * 2 * camera.zoom;
   ctx.save();
-  ctx.beginPath();
-  ctx.rect(x0, y0, size, size);
-  ctx.clip();
   ctx.globalAlpha = t;
   ctx.filter = `blur(${Math.round((1 - t) * CITY_BG_MAX_BLUR_PX)}px)`;
-  ctx.drawImage(entry.img, x0, y0, size, size);
+  ctx.drawImage(masked, x0, y0, size, size);
   ctx.filter = 'none';
   ctx.globalAlpha = 1;
   ctx.restore();
@@ -2425,6 +2445,18 @@ function worldToScreen(wx, wy, w, h) {
   return [(wx - camera.x) * camera.zoom + w / 2, (wy - camera.y) * camera.zoom + h / 2];
 }
 function cityDetailVisible() { return CITY_WORLD_RADIUS * camera.zoom >= LOD_RADIUS_THRESHOLD_PX; }
+
+// Keep the visible viewport inside the country background image's own
+// 0-100 world square whenever it's big enough to fill the screen — otherwise
+// panning/zooming out could expose the flat fallback-color margin beyond the
+// image's edge as a hard rectangle. If the whole world is smaller than the
+// viewport (very zoomed out), center it instead of clamping to an inverted range.
+function clampCameraToWorld(w, h) {
+  const halfWorldW = (w / 2) / camera.zoom;
+  const halfWorldH = (h / 2) / camera.zoom;
+  camera.x = halfWorldW * 2 >= 100 ? 50 : clamp(camera.x, halfWorldW, 100 - halfWorldW);
+  camera.y = halfWorldH * 2 >= 100 ? 50 : clamp(camera.y, halfWorldH, 100 - halfWorldH);
+}
 
 function livePlayerWorldPos() {
   const p = state.player;
@@ -2568,6 +2600,7 @@ function drawRouteHighlight(toPxWorld) {
 function drawWorld() {
   const rect = canvas.getBoundingClientRect();
   const w = rect.width, h = rect.height;
+  clampCameraToWorld(w, h);
   ctx.clearRect(0, 0, w, h);
   const toPxWorld = (wx, wy) => worldToScreen(wx, wy, w, h);
   lastClickables = {};
