@@ -1408,7 +1408,7 @@ function offerFoodDelivery() {
   pushPendingAction({
     kind: 'hungry',
     title: 'Проголодался в пути',
-    text: `Живот совсем подводит. Можно заказать доставку еды прямо сюда — дороже, чем в кафе (доставка +${Math.round(FOOD_DELIVERY_SURCHARGE * 100)}%), но не придётся останавливаться и искать кафе. Если денег нет — остаётся только терпеть, а это вытягивает силы втрое быстрее.`,
+    text: `Живот совсем подводит. Можно заказать доставку еды прямо сюда — дороже, чем в кафе (доставка +${Math.round(FOOD_DELIVERY_SURCHARGE * 100)}%), но не придётся останавливаться и искать кафе. Если не заказать, голод продолжит расти — а когда дойдёт до предела, в сон начнёт клонить втрое быстрее, пока не поешь.`,
   });
 }
 
@@ -1704,9 +1704,11 @@ function resolvePendingAction(actionId, choice) {
   const action = state.pendingActions[idx];
 
   // Not tied to a blocked travel activity — the courier keeps moving either way.
+  // Declining here has no consequence yet: hunger is only a warning at this
+  // point (not maxed out), so tripled sleepiness only ever starts once it
+  // actually hits 100% and he chooses to push through (see 'exhausted' below).
   if (action.kind === 'hungry') {
     if (choice === 'deliver') orderFoodDelivery();
-    else if (choice === 'endure') startEnduring();
     state.pendingActions.splice(idx, 1);
     return;
   }
@@ -1889,8 +1891,11 @@ function simulateTick(dt, summary) {
       if (p.hunger >= 90 && p.hunger < 100 && !p.offeredFoodDelivery) {
         p.offeredFoodDelivery = true;
         if (offline) {
+          // Hunger isn't actually maxed yet at this point — only auto-buy if
+          // there's money for it; otherwise just let it keep climbing normally
+          // (the real forced choice, and the only place enduring can start,
+          // is the >=100% branch further below).
           if (state.money >= foodDeliveryPrice()) orderFoodDelivery();
-          else startEnduring();
         } else {
           offerFoodDelivery();
         }
@@ -2071,6 +2076,21 @@ function strokePolyline(poly, toPx) {
   const [xl, yl] = toPx(last.x, last.y);
   ctx.lineTo(xl, yl);
   ctx.stroke();
+}
+
+// Plain text drawn straight onto the photo backgrounds can lose contrast
+// depending on what's underneath — a dark outline behind the fill keeps map
+// labels legible over any part of the image instead of only some of it.
+function drawMapLabel(text, x, y, opts) {
+  const o = opts || {};
+  ctx.font = o.font || '9px system-ui';
+  ctx.textAlign = o.align || 'left';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = o.strokeStyle || 'rgba(8,10,14,0.85)';
+  ctx.lineWidth = o.strokeWidth || 3;
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = o.fill || '#eee';
+  ctx.fillText(text, x, y);
 }
 
 const BLOB_OFFSETS = [[0, 0], [0.5, 0.3], [-0.4, 0.35], [0.2, -0.4], [-0.3, -0.25]];
@@ -2542,9 +2562,16 @@ function drawCityDetail(cityId, toPxWorld, w, h) {
   const toPx = (x, y) => { const wpt = localToWorld(x, y, cityId); return toPxWorld(wpt.x, wpt.y); };
   const scalePxPerUnit = camera.zoom * (CITY_WORLD_RADIUS / 50);
 
-  drawDecor(getMapDecor('city:' + cityId), toPx, scalePxPerUnit);
+  // A city with its own painted background already depicts its river/greenery,
+  // so the old code-drawn decor (forest/lake/marsh blobs, a synthetic river,
+  // bridges) would just double up as stray shapes floating over the artwork.
+  if (!CITY_BG_SOURCES[cityId]) {
+    drawDecor(getMapDecor('city:' + cityId), toPx, scalePxPerUnit);
+  }
   drawRoads(cityId, points, edges, toPx);
-  drawBridges(getCityBridges(cityId, points, edges), toPx, scalePxPerUnit);
+  if (!CITY_BG_SOURCES[cityId]) {
+    drawBridges(getCityBridges(cityId, points, edges), toPx, scalePxPerUnit);
+  }
 
   points.forEach(pnt => {
     if (pnt.type === 'gate') return;
@@ -2556,15 +2583,12 @@ function drawCityDetail(cityId, toPxWorld, w, h) {
     ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill();
     ctx.font = '13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(style.glyph, x, y);
-    ctx.textAlign = 'left'; ctx.fillStyle = '#9aa4b2'; ctx.font = '9px system-ui';
-    ctx.fillText(pnt.name, x + 14, y + 3);
+    drawMapLabel(pnt.name, x + 14, y + 3, { font: '9px system-ui', fill: '#eef1f5' });
   });
 
   const meta = cityMeta(cityId);
   const [lx, ly] = toPxWorld(meta.x, meta.y - CITY_WORLD_RADIUS * 1.15);
-  ctx.font = 'bold 12px system-ui'; ctx.fillStyle = '#eee'; ctx.textAlign = 'center';
-  ctx.fillText(meta.name, lx, ly);
-  ctx.textAlign = 'left';
+  drawMapLabel(meta.name, lx, ly, { font: 'bold 12px system-ui', align: 'center' });
 }
 
 function drawRouteHighlight(toPxWorld) {
@@ -2663,9 +2687,7 @@ function drawWorld() {
       ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.fill();
       ctx.font = '15px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('🏙', x, y);
-      ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#eee';
-      ctx.fillText(c.name, x, y + 22);
-      ctx.textAlign = 'left';
+      drawMapLabel(c.name, x, y + 22, { font: 'bold 11px system-ui', align: 'center' });
     }
   });
 
@@ -3181,7 +3203,7 @@ function openProblemModal(action) {
     }
   } else if (action.kind === 'hungry') {
     addBtn(`🍔 Заказать доставку — ${foodDeliveryPrice()} ₽`, 'deliver', state.money < foodDeliveryPrice());
-    addBtn('Потерпеть (в сон будет клонить втрое быстрее)', 'endure');
+    addBtn('Пока обойдусь', 'endure');
   }
   el('problem-modal').classList.remove('hidden');
 }
