@@ -2108,16 +2108,6 @@ function drawDecor(decor, toPx, scalePxPerUnit) {
 
 // ---------- biome background, mountains, bridges ----------
 
-// A single painted terrain texture (snowy mountains north -> plains -> dry
-// steppe south) covering the whole country's 0-100 world square, drawn as the
-// base layer under every road/river/marker. Falls back to the old procedural
-// gradient+silhouette while the image is still loading (or fails to load).
-const mapBgCountryImg = new Image();
-let mapBgCountryLoaded = false;
-mapBgCountryImg.onload = () => { mapBgCountryLoaded = true; };
-mapBgCountryImg.src = 'assets/map-bg-country.jpg';
-const MAP_BG_FALLBACK_COLOR = '#9b9676'; // approx. average tone of the image, for any panned-off-map margin
-
 let biomePatchesCache = null;
 function getBiomePatches() {
   if (biomePatchesCache) return biomePatchesCache;
@@ -2366,6 +2356,62 @@ const LOD_RADIUS_THRESHOLD_PX = 55; // city on-screen radius (px) above which it
 const camera = { x: 26, y: 58, zoom: 34 }; // overwritten by centerOnPlayer() on load
 let cameraTween = null;
 
+// A single painted terrain texture (snowy mountains north -> plains -> dry
+// steppe south) covering the whole country's 0-100 world square, drawn as the
+// base layer under every road/river/marker. Falls back to the old procedural
+// gradient+silhouette while the image is still loading (or fails to load).
+const mapBgCountryImg = new Image();
+let mapBgCountryLoaded = false;
+mapBgCountryImg.onload = () => { mapBgCountryLoaded = true; };
+mapBgCountryImg.src = 'assets/map-bg-country.jpg';
+const MAP_BG_FALLBACK_COLOR = '#9b9676'; // approx. average tone of the image, for any panned-off-map margin
+
+// A handful of cities can have their own hand-painted background texture
+// (currently just the starting city); everywhere else keeps the shared
+// country texture. Loaded lazily and cached per city id.
+const CITY_BG_SOURCES = { rivnoe: 'assets/map-bg-rivnoe.jpg' };
+const cityBgImages = {};
+function getCityBgImage(cityId) {
+  const src = CITY_BG_SOURCES[cityId];
+  if (!src) return null;
+  if (!cityBgImages[cityId]) {
+    const entry = { img: new Image(), loaded: false };
+    entry.img.onload = () => { entry.loaded = true; };
+    entry.img.src = src;
+    cityBgImages[cityId] = entry;
+  }
+  return cityBgImages[cityId];
+}
+
+// As the camera approaches a city with its own background texture, that
+// texture fades in (out of a blur) over this zoom range, finishing right as
+// cityDetailVisible() flips on full vector road/point detail — so the ground
+// texture and the streets snap into focus together instead of at different times.
+const CITY_BG_BLEND_START_ZOOM = 6;
+const CITY_BG_BLEND_END_ZOOM = LOD_RADIUS_THRESHOLD_PX / CITY_WORLD_RADIUS;
+const CITY_BG_MAX_BLUR_PX = 10;
+function cityBgBlendT() {
+  return clamp((camera.zoom - CITY_BG_BLEND_START_ZOOM) / (CITY_BG_BLEND_END_ZOOM - CITY_BG_BLEND_START_ZOOM), 0, 1);
+}
+function drawCityBackgroundPatch(c, toPxWorld) {
+  const entry = getCityBgImage(c.id);
+  if (!entry || !entry.loaded) return;
+  const t = cityBgBlendT();
+  if (t <= 0.01) return;
+  const [x0, y0] = toPxWorld(c.x - CITY_WORLD_RADIUS, c.y - CITY_WORLD_RADIUS);
+  const size = CITY_WORLD_RADIUS * 2 * camera.zoom;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0, y0, size, size);
+  ctx.clip();
+  ctx.globalAlpha = t;
+  ctx.filter = `blur(${Math.round((1 - t) * CITY_BG_MAX_BLUR_PX)}px)`;
+  ctx.drawImage(entry.img, x0, y0, size, size);
+  ctx.filter = 'none';
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 function localToWorld(x, y, space) {
   if (space === 'country') return { x, y };
   const meta = cityMeta(space);
@@ -2536,6 +2582,7 @@ function drawWorld() {
     drawBiomeBackground(toPxWorld, w, h);
     drawMountains(toPxWorld);
   }
+  COUNTRY_CITIES.forEach(c => drawCityBackgroundPatch(c, toPxWorld));
   drawDecor(getMapDecor('country'), toPxWorld, camera.zoom);
 
   const roadPolys = getCountryRoadPolylines();
