@@ -2108,6 +2108,16 @@ function drawDecor(decor, toPx, scalePxPerUnit) {
 
 // ---------- biome background, mountains, bridges ----------
 
+// A single painted terrain texture (snowy mountains north -> plains -> dry
+// steppe south) covering the whole country's 0-100 world square, drawn as the
+// base layer under every road/river/marker. Falls back to the old procedural
+// gradient+silhouette while the image is still loading (or fails to load).
+const mapBgCountryImg = new Image();
+let mapBgCountryLoaded = false;
+mapBgCountryImg.onload = () => { mapBgCountryLoaded = true; };
+mapBgCountryImg.src = 'assets/map-bg-country.jpg';
+const MAP_BG_FALLBACK_COLOR = '#9b9676'; // approx. average tone of the image, for any panned-off-map margin
+
 let biomePatchesCache = null;
 function getBiomePatches() {
   if (biomePatchesCache) return biomePatchesCache;
@@ -2516,8 +2526,16 @@ function drawWorld() {
   const toPxWorld = (wx, wy) => worldToScreen(wx, wy, w, h);
   lastClickables = {};
 
-  drawBiomeBackground(toPxWorld, w, h);
-  drawMountains(toPxWorld);
+  if (mapBgCountryLoaded) {
+    ctx.fillStyle = MAP_BG_FALLBACK_COLOR;
+    ctx.fillRect(0, 0, w, h);
+    const [x0, y0] = toPxWorld(0, 0);
+    const size = 100 * camera.zoom;
+    ctx.drawImage(mapBgCountryImg, x0, y0, size, size);
+  } else {
+    drawBiomeBackground(toPxWorld, w, h);
+    drawMountains(toPxWorld);
+  }
   drawDecor(getMapDecor('country'), toPxWorld, camera.zoom);
 
   const roadPolys = getCountryRoadPolylines();
