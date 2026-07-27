@@ -965,7 +965,7 @@ function offlineAutoEat() {
   state.money -= cost;
   p.status = 'eating';
   p.eatElapsed = 0;
-  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label };
+  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label, hungerStart: p.hunger };
   if (offlineAutoTally) { offlineAutoTally.meals++; offlineAutoTally.foodSpent += cost; }
   log(isHome ? 'Поел дома (авто, пока был офлайн)' : `Поел в кафе по пути — ${cost} ₽ (авто, офлайн)`, { silent: true });
 }
@@ -976,7 +976,7 @@ function offlineAutoSleep() {
   const isHome = pointById(p.positionId).type === 'home';
   if (isHome) {
     p.status = 'resting'; p.restElapsed = 0;
-    p.restPlan = { totalMinutes: 480, sleepinessRelief: 100, isSleep: true, label: 'Выспаться (8 ч)' };
+    p.restPlan = { totalMinutes: 480, sleepinessRelief: 100, isSleep: true, label: 'Выспаться (8 ч)', sleepinessStart: p.sleepiness };
     if (offlineAutoTally) offlineAutoTally.sleeps++;
     log('Поспал дома (авто, пока был офлайн)', { silent: true });
     return;
@@ -984,7 +984,7 @@ function offlineAutoSleep() {
   if (state.money >= OFFLINE_SLEEP_AWAY_COST) {
     state.money -= OFFLINE_SLEEP_AWAY_COST;
     p.status = 'resting'; p.restElapsed = 0;
-    p.restPlan = { totalMinutes: 480, sleepinessRelief: 100, isSleep: true, label: 'Ночлег' };
+    p.restPlan = { totalMinutes: 480, sleepinessRelief: 100, isSleep: true, label: 'Ночлег', sleepinessStart: p.sleepiness };
     if (offlineAutoTally) { offlineAutoTally.sleeps++; offlineAutoTally.sleepSpent += OFFLINE_SLEEP_AWAY_COST; }
     log(`Переночевал не дома — ${OFFLINE_SLEEP_AWAY_COST} ₽ (авто, офлайн)`, { silent: true });
     return;
@@ -992,7 +992,7 @@ function offlineAutoSleep() {
   if (spec.draw === 'car' || spec.draw === 'truck') {
     const relief = p.equipment['sleeper_cab'] ? 100 : 70;
     p.status = 'resting'; p.restElapsed = 0;
-    p.restPlan = { totalMinutes: 480, sleepinessRelief: relief, isSleep: true, label: 'Поспать в машине (8 ч)' };
+    p.restPlan = { totalMinutes: 480, sleepinessRelief: relief, isSleep: true, label: 'Поспать в машине (8 ч)', sleepinessStart: p.sleepiness };
     log('Без денег на ночлег — переночевал в машине (авто, офлайн)', { silent: true });
     return;
   }
@@ -1010,7 +1010,7 @@ function newGameState() {
     gameOver: null, // null | 'bankruptcy'
     player: {
       positionId: 'rivnoe:home',
-      status: 'idle', // idle | moving | resting | eating
+      status: 'idle', // idle | moving | resting | eating | refueling
       activity: null,
       hunger: 15,
       sleepiness: 15,
@@ -1019,8 +1019,10 @@ function newGameState() {
       vehicle: startingVehicle,
       restElapsed: 0,
       eatElapsed: 0,
+      refuelElapsed: 0,
       restPlan: null,
       eatPlan: null,
+      refuelPlan: null,
       jobs: [], // { id, fromId, toId, itemName, storage, weightKg, volumeL, urgencyKey, deadlineReal, payout, pickedUp }
       equipment: {},
       warnedHunger: false,
@@ -1080,6 +1082,8 @@ function migrateEconomyFields() {
   if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
   if (typeof state.player.warnedSleepy !== 'boolean') state.player.warnedSleepy = false;
   if (typeof state.player.sleepyGrace !== 'number') state.player.sleepyGrace = 0;
+  if (typeof state.player.refuelElapsed !== 'number') state.player.refuelElapsed = 0;
+  if (state.player.refuelPlan === undefined) state.player.refuelPlan = null;
   delete state.player.fatigue;
   delete state.player.warnedFatigue;
 
@@ -1433,30 +1437,29 @@ const VEHICLE_SLEEP_OPTIONS = [
   { id: 'car_sleep8', label: 'Поспать в машине (8 ч)', minutes: 480, comfortRelief: 70, cabinRelief: 100 },
 ];
 function vehicleCanSleepIn(spec) { return spec.draw === 'car' || spec.draw === 'truck'; }
-// Cutting rest/food short only credits a fraction of the elapsed time's benefit,
-// on top of that fraction already being less than the full plan — the double
-// shortfall is the "didn't get enough sleep/food" penalty.
-const INTERRUPT_PENALTY_FACTOR = 0.75;
 
+// Hunger/sleepiness/fuel now move gradually in step with the action's own
+// progress bar (see simulateTick), so interrupting just stops it wherever it
+// currently is — whatever's already been gained is kept, nothing extra is
+// deducted on top.
 function cancelCurrentAction() {
   const p = state.player;
   if (p.status === 'resting' && p.restPlan) {
-    const fraction = clamp(p.restElapsed / p.restPlan.totalMinutes, 0, 1);
-    if (fraction > 0 && p.restPlan.isSleep) {
-      const sleepRelief = Math.round((p.restPlan.sleepinessRelief || 0) * fraction * INTERRUPT_PENALTY_FACTOR);
-      p.sleepiness = clamp(p.sleepiness - sleepRelief, 0, 100);
-      log(`Прервал сон (${p.restPlan.label}), не доспал — восстановил ${sleepRelief} из ${p.restPlan.sleepinessRelief}`, { silent: true });
+    if (p.restElapsed > 0) {
+      log(`Прервал сон (${p.restPlan.label}), не доспал — восстановил ${Math.round(p.restPlan.sleepinessStart - p.sleepiness)} из ${p.restPlan.sleepinessRelief}`, { silent: true });
     }
     p.status = 'idle'; p.restPlan = null; p.restElapsed = 0;
   } else if (p.status === 'eating' && p.eatPlan) {
-    const fraction = clamp(p.eatElapsed / p.eatPlan.totalMinutes, 0, 1);
-    if (fraction > 0) {
-      const relief = Math.round(p.eatPlan.hungerRelief * fraction * INTERRUPT_PENALTY_FACTOR);
-      p.hunger = clamp(p.hunger - relief, 0, 100);
-      log(`Прервал приём пищи (${p.eatPlan.label}), не доел — утолил ${relief} голода из ${p.eatPlan.hungerRelief}`, { silent: true });
+    if (p.eatElapsed > 0) {
+      log(`Прервал приём пищи (${p.eatPlan.label}), не доел — утолил ${Math.round(p.eatPlan.hungerStart - p.hunger)} из ${p.eatPlan.hungerRelief}`, { silent: true });
       p.enduring = false;
     }
     p.status = 'idle'; p.eatPlan = null; p.eatElapsed = 0;
+  } else if (p.status === 'refueling' && p.refuelPlan) {
+    if (p.refuelElapsed > 0) {
+      log(`Прервал заправку (${p.refuelPlan.label}) — залил ${Math.round(p.vehicle.fuel - p.refuelPlan.fuelStart)} из ${Math.round(p.refuelPlan.fuelTarget - p.refuelPlan.fuelStart)} км хода`, { silent: true });
+    }
+    p.status = 'idle'; p.refuelPlan = null; p.refuelElapsed = 0;
   }
 }
 
@@ -1474,7 +1477,7 @@ function startEating(optionId) {
   state.money -= cost;
   p.status = 'eating';
   p.eatElapsed = 0;
-  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label };
+  p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label, hungerStart: p.hunger };
   log(isHome ? `Ест дома (${opt.label})` : `Ест: ${opt.label} (${cost} ₽)`, { silent: true });
 }
 
@@ -1484,7 +1487,7 @@ function startSleeping(optionId) {
   const opt = SLEEP_OPTIONS.find(o => o.id === optionId);
   p.status = 'resting';
   p.restElapsed = 0;
-  p.restPlan = { totalMinutes: opt.minutes, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label };
+  p.restPlan = { totalMinutes: opt.minutes, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label, sleepinessStart: p.sleepiness };
   log(`Лёг спать дома: ${opt.label}`, { silent: true });
 }
 
@@ -1497,18 +1500,22 @@ function startVehicleSleep(optionId) {
   const relief = hasCab ? opt.cabinRelief : opt.comfortRelief;
   p.status = 'resting';
   p.restElapsed = 0;
-  p.restPlan = { totalMinutes: opt.minutes, sleepinessRelief: relief, isSleep: true, label: opt.label };
+  p.restPlan = { totalMinutes: opt.minutes, sleepinessRelief: relief, isSleep: true, label: opt.label, sleepinessStart: p.sleepiness };
   log(hasCab ? `Лёг спать в машине (со спальным местом): ${opt.label}` : `Поспал в машине, неудобно — толку в разы меньше: ${opt.label}`, { silent: true });
 }
 
 function interruptRest() {
   const p = state.player;
-  if (p.status === 'resting' || p.status === 'eating') { cancelCurrentAction(); log('Прервал отдых', { silent: true }); }
+  if (p.status === 'resting' || p.status === 'eating' || p.status === 'refueling') { cancelCurrentAction(); log('Прервал отдых', { silent: true }); }
 }
 
 // ---------- refuelling ----------
 
-function refuel() {
+// A full tank takes this many game-minutes to fill; a partial top-up scales
+// down proportionally, same as the eat/sleep options' progress bars.
+const REFUEL_MINUTES_FULL = 10;
+
+function startRefuel() {
   const p = state.player;
   const spec = vehicleSpec();
   if (spec.fuel === 'legs') return;
@@ -1521,8 +1528,13 @@ function refuel() {
   const cost = Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
   if (state.money < cost) { toast('Не хватает денег на заправку'); return; }
   state.money -= cost;
-  p.vehicle.fuel = spec.tank;
-  log(`Заправился (${cost} ₽)`, { silent: true });
+  p.status = 'refueling';
+  p.refuelElapsed = 0;
+  p.refuelPlan = {
+    totalMinutes: Math.max(2, Math.round((missing / spec.tank) * REFUEL_MINUTES_FULL)),
+    fuelStart: p.vehicle.fuel, fuelTarget: spec.tank, label: 'Заправка',
+  };
+  log(`Начал заправляться (${cost} ₽)`, { silent: true });
 }
 
 // ---------- travel ----------
@@ -1914,18 +1926,34 @@ function simulateTick(dt, summary) {
   } else if (p.status === 'resting') {
     p.restElapsed += dt;
     p.hunger = clamp(p.hunger + HUNGER_RATE_RESTING * dt, 0, 100);
+    // Sleepiness eases down gradually in step with the progress bar, rather
+    // than staying frozen until one lump-sum drop at the very end — so what
+    // the bar shows always matches how rested he actually already is.
+    if (p.restPlan.isSleep) {
+      const frac = clamp(p.restElapsed / p.restPlan.totalMinutes, 0, 1);
+      p.sleepiness = clamp(p.restPlan.sleepinessStart - p.restPlan.sleepinessRelief * frac, 0, 100);
+    }
     if (p.restElapsed >= p.restPlan.totalMinutes) {
-      if (p.restPlan.isSleep) p.sleepiness = clamp(p.sleepiness - p.restPlan.sleepinessRelief, 0, 100);
       log(`Отдохнул: ${p.restPlan.label}`);
       p.status = 'idle'; p.restPlan = null;
     }
   } else if (p.status === 'eating') {
     p.eatElapsed += dt;
+    const frac = clamp(p.eatElapsed / p.eatPlan.totalMinutes, 0, 1);
+    p.hunger = clamp(p.eatPlan.hungerStart - p.eatPlan.hungerRelief * frac, 0, 100);
     if (p.eatElapsed >= p.eatPlan.totalMinutes) {
-      p.hunger = clamp(p.hunger - p.eatPlan.hungerRelief, 0, 100);
       p.enduring = false;
       log(`Поел: ${p.eatPlan.label}`);
       p.status = 'idle'; p.eatPlan = null;
+    }
+  } else if (p.status === 'refueling') {
+    p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
+    p.refuelElapsed += dt;
+    const frac = clamp(p.refuelElapsed / p.refuelPlan.totalMinutes, 0, 1);
+    p.vehicle.fuel = p.refuelPlan.fuelStart + (p.refuelPlan.fuelTarget - p.refuelPlan.fuelStart) * frac;
+    if (p.refuelElapsed >= p.refuelPlan.totalMinutes) {
+      log(`Заправился: ${p.refuelPlan.label}`, { silent: true });
+      p.status = 'idle'; p.refuelPlan = null;
     }
   } else {
     p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
@@ -2870,8 +2898,8 @@ function renderPointPanel() {
     return;
   }
 
-  if (p.status === 'resting' || p.status === 'eating') {
-    const planLabel = (p.restPlan || p.eatPlan || {}).label || '';
+  if (p.status === 'resting' || p.status === 'eating' || p.status === 'refueling') {
+    const planLabel = (p.restPlan || p.eatPlan || p.refuelPlan || {}).label || '';
     label.textContent += ` — ${planLabel}...`;
     addBtn('Прервать', () => { interruptRest(); renderAll(); });
     return;
@@ -2903,7 +2931,7 @@ function renderPointPanel() {
     if (spec.fuel !== 'legs') {
       const missing = spec.tank - p.vehicle.fuel;
       const cost = Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
-      addBtn(missing <= 0.01 ? 'Бак полон' : `⛽ Заправиться — ${cost} ₽`, () => { refuel(); renderAll(); }, missing <= 0.01 || state.money < cost || !openNow);
+      addBtn(missing <= 0.01 ? 'Бак полон' : `⛽ Заправиться — ${cost} ₽`, () => { startRefuel(); renderAll(); }, missing <= 0.01 || state.money < cost || !openNow);
     }
   }
   if (point.type !== 'home' && vehicleCanSleepIn(vehicleSpec())) {
@@ -3108,6 +3136,12 @@ function renderStatusPanel() {
     if (p.eatPlan) {
       progressFraction = clamp(p.eatElapsed / p.eatPlan.totalMinutes, 0, 1);
       remainingLabel = formatMinutesDuration(p.eatPlan.totalMinutes - p.eatElapsed);
+    }
+  } else if (p.status === 'refueling') {
+    text = `Заправляется: ${p.refuelPlan ? p.refuelPlan.label : ''}`;
+    if (p.refuelPlan) {
+      progressFraction = clamp(p.refuelElapsed / p.refuelPlan.totalMinutes, 0, 1);
+      remainingLabel = formatMinutesDuration(p.refuelPlan.totalMinutes - p.refuelElapsed);
     }
   } else if (p.status === 'moving') {
     const a = p.activity;
