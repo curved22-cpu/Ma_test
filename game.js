@@ -18,7 +18,7 @@ const WEAR_PER_KM = 0.5;
 // doing, and only actual sleep brings it back down. There is no separate "energy"
 // that a quick roadside break can top up — running the tank to empty is dangerous,
 // not just inconvenient.
-const SLEEPINESS_RATE = 100 / (16 * 60); // per game-minute: empty after 16 waking hours
+const SLEEPINESS_RATE = 100 / (20 * 60); // per game-minute: empty after 20 waking hours
 const ENDURE_SLEEPINESS_MULT = 3; // sleepiness builds 3x faster while "enduring" hunger with no money for food
 const SLEEPY_WARN_THRESHOLD = 80;
 const SLEEPY_ACCIDENT_CHANCE = 0.6; // per tick, once totally out of sleep and still driving
@@ -1321,8 +1321,10 @@ function takeJob(jobId) {
   if (pendingCount >= MAX_PENDING_JOBS) { toast(`Нельзя резервировать больше ${MAX_PENDING_JOBS} заказов одновременно`); return; }
   const idx = state.availableJobs.findIndex(j => j.id === jobId);
   if (idx === -1) return;
-  if (!jobPickupReachable(state.availableJobs[idx])) { toast('Пешком до места забора не дойти — этот заказ недоступен'); return; }
-  const job = state.availableJobs.splice(idx, 1)[0];
+  const job = state.availableJobs[idx];
+  if (!jobPickupReachable(job)) { toast('Пешком до места забора не дойти — этот заказ недоступен'); return; }
+  if (!jobFitsVehicle(job)) { toast('Не подходит для текущего транспорта — вес, объём или снаряжение'); return; }
+  state.availableJobs.splice(idx, 1);
   state.player.jobs.push(job);
   log(`Взял заказ: ${job.itemName} (${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)}), ${job.payout} ₽`);
   ensureFittingJobExists();
@@ -1436,9 +1438,11 @@ function startEnduring() {
   state.player.enduring = true;
   log('Решил перетерпеть голод — в сон теперь клонит втрое быстрее, пока не поест', { silent: true });
 }
+// Relief scales linearly with hours slept: 8h fully clears the bar, 4h clears
+// exactly half, and so on (12.5 per hour).
 const SLEEP_OPTIONS = [
-  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, sleepinessRelief: 25, isSleep: true },
-  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, sleepinessRelief: 70, isSleep: true },
+  { id: 'nap', label: 'Вздремнуть (1 ч)', minutes: 60, sleepinessRelief: 12.5, isSleep: true },
+  { id: 'sleep4', label: 'Поспать (4 ч)', minutes: 240, sleepinessRelief: 50, isSleep: true },
   { id: 'sleep8', label: 'Выспаться (8 ч)', minutes: 480, sleepinessRelief: 100, isSleep: true },
 ];
 // Sleeping in the vehicle itself works only where that's physically plausible
@@ -1446,8 +1450,8 @@ const SLEEP_OPTIONS = [
 // it's uncomfortable, so the same hours in the seat pay off only about half
 // as much as a real bed would.
 const VEHICLE_SLEEP_OPTIONS = [
-  { id: 'car_sleep4', label: 'Поспать в машине (4 ч)', minutes: 240, comfortRelief: 40, cabinRelief: 70 },
-  { id: 'car_sleep8', label: 'Поспать в машине (8 ч)', minutes: 480, comfortRelief: 70, cabinRelief: 100 },
+  { id: 'car_sleep4', label: 'Поспать в машине (4 ч)', minutes: 240, comfortRelief: 25, cabinRelief: 50 },
+  { id: 'car_sleep8', label: 'Поспать в машине (8 ч)', minutes: 480, comfortRelief: 50, cabinRelief: 100 },
 ];
 function vehicleCanSleepIn(spec) { return spec.draw === 'car' || spec.draw === 'truck'; }
 
@@ -1675,7 +1679,7 @@ function triggerBreakdown(activity) {
 function triggerSleepyCollapse() {
   const p = state.player;
   state.gameTime += FOOT_COLLAPSE_MINUTES;
-  p.sleepiness = clamp(p.sleepiness - (FOOT_COLLAPSE_MINUTES / (16 * 60)) * 100, 0, 100);
+  p.sleepiness = clamp(p.sleepiness - FOOT_COLLAPSE_MINUTES * SLEEPINESS_RATE, 0, 100);
   if (p.jobs.some(j => j.pickedUp)) {
     state.money -= CARGO_MISHAP_FINE;
     log(`Не удержался на ногах от недосыпа — уснул прямо на месте на 2 часа. Груз помялся, штраф ${CARGO_MISHAP_FINE} ₽.`);
@@ -2933,7 +2937,7 @@ function renderPointPanel() {
     addBtn(`✅ Сдать «${j.itemName}»`, () => { deliverJob(j.id); renderAll(); }, !openNow);
   });
 
-  if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop(), !openNow); }
+  if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop(true), !openNow); }
   if (point.type === 'workshop') { addBtn('Открыть мастерскую', () => openWorkshop(), !openNow); }
 
   if (point.type === 'cafe' || point.type === 'waystop') {
@@ -3051,10 +3055,8 @@ function renderCargoPanel() {
 let lastOrdersSignature = null;
 let lastOrdersRenderRealTime = 0;
 // A pickup a foot courier can't practically walk to right now (wrong settlement
-// entirely) — unlike weight/equipment mismatches, which get re-validated at the
-// actual pickup moment and can still be reserved ahead of an upgrade, this one
-// blocks taking the job outright: there's no point reserving a delivery you have
-// no way of even starting.
+// entirely) — this blocks taking the job outright: there's no point reserving
+// a delivery you have no way of even starting.
 function jobPickupReachable(job) {
   const spec = vehicleSpec();
   return spec.cat !== 'foot' || pointSpace(job.fromId) === pointSpace(state.player.positionId);
@@ -3129,7 +3131,7 @@ function renderOrdersList() {
     pay.textContent = `${job.payout} ₽`;
     const btn = document.createElement('button');
     btn.textContent = 'Взять';
-    btn.disabled = !canTakeMore || !jobPickupReachable(job);
+    btn.disabled = !canTakeMore || !jobPickupReachable(job) || !fits;
     btn.onclick = () => { takeJob(job.id); renderAll(); };
     li.append(info, pay, btn);
     ul.appendChild(li);
@@ -3313,8 +3315,10 @@ function renderAll() {
 // ---------- shop / workshop modals ----------
 
 let shopTab = 'vehicles';
-function openShop() {
+let shopVehicleCategory = null; // null = category tile grid; otherwise the selected cat's vehicle list
+function openShop(resetVehicleView) {
   if (!isPointOpenNow(pointById(state.player.positionId))) { toast('Закрыто — придётся подождать открытия'); return; }
+  if (resetVehicleView) shopVehicleCategory = null;
   el('shop-tab-vehicles').classList.toggle('active', shopTab === 'vehicles');
   el('shop-tab-equipment').classList.toggle('active', shopTab === 'equipment');
   const citySpace = pointSpace(state.player.positionId);
@@ -3325,12 +3329,34 @@ function openShop() {
   const list = el('shop-list');
   list.innerHTML = '';
   if (shopTab === 'vehicles') {
-    VEHICLE_CATS_ORDER.filter(cat => allowedCats.includes(cat)).forEach(cat => {
+    const catsHere = VEHICLE_CATS_ORDER.filter(cat => allowedCats.includes(cat));
+    if (!shopVehicleCategory || !catsHere.includes(shopVehicleCategory)) {
+      // Top level: one tile per category — tap it to drill into that category's list.
+      list.classList.add('shop-tiles');
+      catsHere.forEach(cat => {
+        const tile = document.createElement('li');
+        tile.className = 'shop-tile';
+        const ownedCount = state.player.vehicles.filter(v => VEHICLE_BY_ID[v.type] && VEHICLE_BY_ID[v.type].cat === cat).length;
+        tile.innerHTML = `<div class="shop-tile-icon">${CAT_GLYPH[cat]}</div><div class="shop-tile-label">${CAT_LABEL[cat]}</div>` +
+          (ownedCount ? `<div class="shop-tile-count">в гараже: ${ownedCount}</div>` : '');
+        tile.onclick = () => { shopVehicleCategory = cat; openShop(); };
+        list.appendChild(tile);
+      });
+    } else {
+      list.classList.remove('shop-tiles');
+      const backLi = document.createElement('li');
+      backLi.className = 'shop-back-row';
+      const backBtn = document.createElement('button');
+      backBtn.className = 'shop-back-btn';
+      backBtn.textContent = '← Все категории';
+      backBtn.onclick = () => { shopVehicleCategory = null; openShop(); };
+      backLi.appendChild(backBtn);
+      list.appendChild(backLi);
       const header = document.createElement('li');
       header.className = 'shop-cat-header';
-      header.textContent = `${CAT_GLYPH[cat]} ${CAT_LABEL[cat]}`;
+      header.textContent = `${CAT_GLYPH[shopVehicleCategory]} ${CAT_LABEL[shopVehicleCategory]}`;
       list.appendChild(header);
-      VEHICLES.filter(v => v.cat === cat).forEach(v => {
+      VEHICLES.filter(v => v.cat === shopVehicleCategory).forEach(v => {
         const li = document.createElement('li');
         const owned = state.player.vehicles.some(veh => veh.type === v.id);
         const info = document.createElement('div');
@@ -3343,8 +3369,9 @@ function openShop() {
         li.append(info, btn);
         list.appendChild(li);
       });
-    });
+    }
   } else {
+    list.classList.remove('shop-tiles');
     EQUIPMENT.forEach(eq => {
       const li = document.createElement('li');
       const owned = !!state.player.equipment[eq.id];
@@ -3698,6 +3725,7 @@ el('btn-diary-close').onclick = () => el('diary-modal').classList.add('hidden');
 
 el('btn-open-orders').onclick = () => { el('orders-modal').classList.remove('hidden'); lastOrdersSignature = null; renderOrdersList(); };
 el('btn-orders-close').onclick = () => el('orders-modal').classList.add('hidden');
+el('btn-orders-close-x').onclick = () => el('orders-modal').classList.add('hidden');
 el('filter-storage').onchange = (e) => { orderFilters.storage = e.target.value; lastOrdersSignature = null; renderOrdersList(); };
 el('filter-urgency').onchange = (e) => { orderFilters.urgency = e.target.value; lastOrdersSignature = null; renderOrdersList(); };
 el('filter-fits-only').onchange = (e) => { orderFilters.fitsOnly = e.target.checked; lastOrdersSignature = null; renderOrdersList(); };
@@ -3719,8 +3747,8 @@ el('btn-refuse-confirm').onclick = () => {
 el('btn-refuse-cancel').onclick = () => { pendingRefuseJobId = null; el('refuse-modal').classList.add('hidden'); };
 
 el('btn-shop-close').onclick = () => el('shop-modal').classList.add('hidden');
-el('shop-tab-vehicles').onclick = () => { shopTab = 'vehicles'; openShop(); };
-el('shop-tab-equipment').onclick = () => { shopTab = 'equipment'; openShop(); };
+el('shop-tab-vehicles').onclick = () => { shopTab = 'vehicles'; openShop(true); };
+el('shop-tab-equipment').onclick = () => { shopTab = 'equipment'; openShop(true); };
 el('btn-workshop-close').onclick = () => el('workshop-modal').classList.add('hidden');
 el('btn-workshop-repair').onclick = () => { workshopRepair(); openWorkshop(); renderAll(); };
 el('btn-workshop-upgrade').onclick = () => { workshopUpgrade(); openWorkshop(); renderAll(); };

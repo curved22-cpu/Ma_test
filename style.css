@@ -291,6 +291,22 @@ html, body { height: 100%; margin: 0; }
 .shop-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; text-align: left; }
 .shop-list button { flex-shrink: 0; }
 .shop-cat-header { background: none !important; color: #7fa1c9; font-weight: 700; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 2px 2px !important; margin-bottom: 2px !important; }
+
+.shop-list.shop-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.shop-list li.shop-tile {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px;
+  padding: 18px 10px;
+  margin-bottom: 0;
+  border-left: none;
+  cursor: pointer;
+}
+.shop-list li.shop-tile:active { background: #2c3542; }
+.shop-tile-icon { font-size: 1.8rem; }
+.shop-tile-label { font-size: 0.85rem; font-weight: 600; }
+.shop-tile-count { font-size: 0.72rem; color: #9aa4b2; }
+.shop-list li.shop-back-row { background: none !important; padding: 0 !important; margin-bottom: 4px !important; }
+.shop-back-btn { background: none; border: none; color: #7fa1c9; text-align: left; padding: 4px 0; width: auto; margin-top: 0; font-size: 0.88rem; }
 .shop-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
 .shop-tabs .shop-tab { flex: 1; margin-top: 0; opacity: 0.6; }
 .shop-tabs .shop-tab.active { opacity: 1; border-color: #4a9dd1; }
@@ -315,6 +331,20 @@ html, body { height: 100%; margin: 0; }
   box-shadow: 0 10px 40px rgba(0,0,0,0.5);
 }
 .modal-box button { margin-top: 8px; width: 100%; }
+button.modal-close-x {
+  position: sticky;
+  top: 0;
+  display: block;
+  margin: 0 0 8px auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1rem;
+  line-height: 1;
+  z-index: 5;
+  background: rgba(28,34,44,0.95);
+}
 
 #offline-header { text-align: left; line-height: 1.5; }
 #offline-header.offline-critical {
