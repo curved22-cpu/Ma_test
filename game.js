@@ -170,6 +170,13 @@ function isPersonalMishap(vehicleSpec) { return vehicleSpec.cat === 'foot'; }
 
 // ---------- equipment ----------
 
+// Foot-only gear bonuses (applied live in vehicleSpec() below, not baked into
+// a separate vehicle entry) — declared here, before EQUIPMENT references them.
+const ERGO_BACKPACK_KG_BONUS = 5;
+const ERGO_BACKPACK_L_BONUS = 10;
+const COMFY_SNEAKERS_SPEED_BONUS = 2; // km/h
+const COMFY_SNEAKERS_SLEEPINESS_MULT = 0.8; // 20% less tiring to walk
+
 const EQUIPMENT = [
   { id: 'thermal_bag', name: 'Термосумка', price: 2500, unlocks: ['chilled'] },
   { id: 'fridge_box', name: 'Холодильный бокс (аккумуляторный)', price: 18000, unlocks: ['chilled', 'frozen'] },
@@ -178,6 +185,8 @@ const EQUIPMENT = [
   { id: 'fragile_case', name: 'Кейс для хрупких грузов', price: 4000, unlocks: ['fragile'] },
   { id: 'secure_case', name: 'Опломбированный кейс (ценности/документы)', price: 6000, unlocks: ['valuable'] },
   { id: 'sleeper_cab', name: 'Спальное место в кабине', price: 25000, unlocks: [], desc: 'Как у дальнобойщиков — можно нормально выспаться в машине/фургоне/грузовике без штрафа за неудобство' },
+  { id: 'ergo_backpack', name: 'Эргономичный рюкзак', price: 3500, unlocks: [], desc: `Пеший курьер берёт с собой больше: +${ERGO_BACKPACK_KG_BONUS} кг, +${ERGO_BACKPACK_L_BONUS} л` },
+  { id: 'comfy_sneakers', name: 'Удобные кроссовки', price: 2000, unlocks: [], desc: `Пешком быстрее (+${COMFY_SNEAKERS_SPEED_BONUS} км/ч) и меньше устаёт в пути` },
 ];
 
 const STORAGE_LABEL = { normal: 'обычные условия', chilled: 'нужна термосумка/холод', frozen: 'нужна заморозка', fragile: 'хрупкое', live_small: 'нужна переноска (мелкое животное)', live_large: 'нужна клетка (крупное животное)', valuable: 'нужен опломбированный кейс' };
@@ -1010,7 +1019,7 @@ function newGameState() {
     gameOver: null, // null | 'bankruptcy'
     player: {
       positionId: 'rivnoe:home',
-      status: 'idle', // idle | moving | resting | eating | refueling
+      status: 'idle', // idle | moving | resting | eating | refueling | collapsed
       activity: null,
       hunger: 15,
       sleepiness: 15,
@@ -1023,6 +1032,9 @@ function newGameState() {
       restPlan: null,
       eatPlan: null,
       refuelPlan: null,
+      collapseRemaining: 0,
+      collapsePrevStatus: 'idle',
+      collapseSleepinessStart: 0,
       jobs: [], // { id, fromId, toId, itemName, storage, weightKg, volumeL, urgencyKey, deadlineReal, payout, pickedUp }
       equipment: {},
       warnedHunger: false,
@@ -1162,7 +1174,16 @@ function formatTime(gameMinutes) {
 
 // ---------- cargo & equipment ----------
 
-function vehicleSpec() { return VEHICLE_BY_ID[state.player.vehicle.type]; }
+function vehicleSpec() {
+  const base = VEHICLE_BY_ID[state.player.vehicle.type];
+  if (base.cat !== 'foot') return base;
+  const p = state.player;
+  const kg = base.kg + (p.equipment['ergo_backpack'] ? ERGO_BACKPACK_KG_BONUS : 0);
+  const l = base.l + (p.equipment['ergo_backpack'] ? ERGO_BACKPACK_L_BONUS : 0);
+  const speed = base.speed + (p.equipment['comfy_sneakers'] ? COMFY_SNEAKERS_SPEED_BONUS : 0);
+  if (kg === base.kg && l === base.l && speed === base.speed) return base;
+  return { ...base, kg, l, speed };
+}
 
 function hasRequiredEquipment(storage) {
   if (storage === 'normal') return true;
@@ -1537,21 +1558,24 @@ function startRefuel() {
   const spec = vehicleSpec();
   if (spec.fuel === 'legs') return;
   const point = pointById(p.positionId);
-  if (point.type !== 'gas' && point.type !== 'waystop') return;
+  // Charging an EV at home off your own outlet is free — everywhere else
+  // (gas station, waystop) it's priced normally, same as any other fuel type.
+  const atHome = point.type === 'home' && spec.fuel === 'electric';
+  if (!atHome && point.type !== 'gas' && point.type !== 'waystop') return;
   if (p.status !== 'idle') return;
-  if (!isPointOpenNow(point)) { toast('Закрыто — придётся подождать открытия'); return; }
+  if (!atHome && !isPointOpenNow(point)) { toast('Закрыто — придётся подождать открытия'); return; }
   const missing = spec.tank - p.vehicle.fuel;
   if (missing <= 0.01) return;
-  const cost = Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
+  const cost = atHome ? 0 : Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
   if (state.money < cost) { toast('Не хватает денег на заправку'); return; }
   state.money -= cost;
   p.status = 'refueling';
   p.refuelElapsed = 0;
   p.refuelPlan = {
     totalMinutes: Math.max(2, Math.round((missing / spec.tank) * REFUEL_MINUTES_FULL)),
-    fuelStart: p.vehicle.fuel, fuelTarget: spec.tank, label: 'Заправка',
+    fuelStart: p.vehicle.fuel, fuelTarget: spec.tank, label: atHome ? 'Зарядка дома' : 'Заправка',
   };
-  log(`Начал заправляться (${cost} ₽)`, { silent: true });
+  log(atHome ? 'Поставил заряжаться дома' : `Начал заправляться (${cost} ₽)`, { silent: true });
 }
 
 // ---------- travel ----------
@@ -1608,6 +1632,7 @@ function beginTravelFromWaypoints(path) {
 
 function startTravel(targetId) {
   const p = state.player;
+  if (p.status === 'collapsed') { toast('Без сознания — сейчас никуда не пойдёт'); return; }
   if (p.status === 'moving' && p.activity) {
     if (p.activity.problemPending) { toast('Сначала реши проблему в пути'); return; }
     const edge = currentEdgeState();
@@ -1675,16 +1700,19 @@ function triggerBreakdown(activity) {
 // Running the sleep tank fully dry is automatic and unavoidable — there's no
 // choice to make, unlike breakdowns/hunger. On foot the courier just drops where
 // he stands; behind the wheel it's a real accident, with a grace window afterward
-// before it can happen again.
+// before it can happen again. This is a real 2-hour lockout, not an instant time
+// skip — a genuine penalty for letting sleepiness run out, not just a discount.
 function triggerSleepyCollapse() {
   const p = state.player;
-  state.gameTime += FOOT_COLLAPSE_MINUTES;
-  p.sleepiness = clamp(p.sleepiness - FOOT_COLLAPSE_MINUTES * SLEEPINESS_RATE, 0, 100);
+  p.collapsePrevStatus = p.status === 'moving' ? 'moving' : 'idle';
+  p.status = 'collapsed';
+  p.collapseRemaining = FOOT_COLLAPSE_MINUTES;
+  p.collapseSleepinessStart = p.sleepiness;
   if (p.jobs.some(j => j.pickedUp)) {
     state.money -= CARGO_MISHAP_FINE;
-    log(`Не удержался на ногах от недосыпа — уснул прямо на месте на 2 часа. Груз помялся, штраф ${CARGO_MISHAP_FINE} ₽.`);
+    log(`Не удержался на ногах от недосыпа — вырубило прямо на месте на 2 часа. Груз помялся, штраф ${CARGO_MISHAP_FINE} ₽.`);
   } else {
-    log('Не удержался на ногах от недосыпа — уснул прямо на месте на 2 часа.');
+    log('Не удержался на ногах от недосыпа — вырубило прямо на месте на 2 часа.');
   }
 }
 
@@ -1876,9 +1904,11 @@ function simulateTick(dt, summary) {
 
   // Sleepiness is the courier's one tiredness stat: it climbs with time no matter
   // what he's doing, and only actual sleep brings it down. Enduring hunger with no
-  // money makes it climb 3x faster on top of that.
-  const sleepyMult = p.enduring ? ENDURE_SLEEPINESS_MULT : 1;
-  if (!(p.status === 'resting' && p.restPlan && p.restPlan.isSleep)) {
+  // money makes it climb 3x faster on top of that; comfy sneakers ease it back down
+  // a bit while walking.
+  const sneakersMult = (vehicleSpec().cat === 'foot' && p.equipment['comfy_sneakers']) ? COMFY_SNEAKERS_SLEEPINESS_MULT : 1;
+  const sleepyMult = (p.enduring ? ENDURE_SLEEPINESS_MULT : 1) * sneakersMult;
+  if (!(p.status === 'resting' && p.restPlan && p.restPlan.isSleep) && p.status !== 'collapsed') {
     p.sleepiness = clamp(p.sleepiness + SLEEPINESS_RATE * dt * sleepyMult, 0, 100);
   }
   p.sleepyGrace = Math.max(0, p.sleepyGrace - dt);
@@ -1979,13 +2009,28 @@ function simulateTick(dt, summary) {
       log(`Заправился: ${p.refuelPlan.label}`, { silent: true });
       p.status = 'idle'; p.refuelPlan = null;
     }
+  } else if (p.status === 'collapsed') {
+    // Fully unresponsive for the whole 2 hours — no travel, no actions, nothing
+    // to click; being unconscious does bring some sleepiness relief, just a lot
+    // less than a real rest would (this is the penalty, not a free nap).
+    p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
+    p.collapseRemaining -= dt;
+    if (!Number.isFinite(p.collapseSleepinessStart)) p.collapseSleepinessStart = Number.isFinite(p.sleepiness) ? p.sleepiness : 100;
+    const totalRelief = FOOT_COLLAPSE_MINUTES * SLEEPINESS_RATE;
+    const frac = clamp((FOOT_COLLAPSE_MINUTES - p.collapseRemaining) / FOOT_COLLAPSE_MINUTES, 0, 1);
+    p.sleepiness = clamp(p.collapseSleepinessStart - totalRelief * frac, 0, 100);
+    if (p.collapseRemaining <= 0) {
+      p.status = p.collapsePrevStatus === 'moving' && p.activity ? 'moving' : 'idle';
+      p.collapseRemaining = 0;
+      log('Пришёл в себя после обморока', { silent: true });
+    }
   } else {
     p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
   }
 
   // Ran the sleep tank fully dry: on foot he just collapses where he stands; behind
   // the wheel (or handlebars) of anything else, it's a serious accident risk instead.
-  if (!state.gameOver && p.sleepiness >= 100) {
+  if (!state.gameOver && p.sleepiness >= 100 && p.status !== 'collapsed') {
     const spec = vehicleSpec();
     if (p.sleepyGrace <= 0) {
       if (p.status === 'moving' && spec.cat !== 'foot') {
@@ -2883,7 +2928,8 @@ function renderPointPanel() {
   const visible = !!uiSelectedPointId && state;
   const point = visible ? pointById(uiSelectedPointId) : null;
   const p = state ? state.player : null;
-  const signature = visible ? `${uiSelectedPointId}|${p.positionId}|${p.status}|${p.jobs.map(j => j.id + ':' + j.pickedUp).join(',')}|${point && isPointOpenNow(point)}` : 'hidden';
+  const collapseTag = p && p.status === 'collapsed' ? Math.ceil(p.collapseRemaining) : 'x';
+  const signature = visible ? `${uiSelectedPointId}|${p.positionId}|${p.status}|${collapseTag}|${p.jobs.map(j => j.id + ':' + j.pickedUp).join(',')}|${point && isPointOpenNow(point)}` : 'hidden';
   if (signature === lastPointPanelSignature) return;
   lastPointPanelSignature = signature;
 
@@ -2917,6 +2963,15 @@ function renderPointPanel() {
     buttons.appendChild(b);
   };
 
+  if (p.status === 'collapsed') {
+    const remaining = formatMinutesDuration(p.collapseRemaining);
+    const label2 = document.createElement('div');
+    label2.className = 'job-sub';
+    label2.textContent = `Без сознания от недосыпа — придёт в себя через ${remaining}`;
+    panel.appendChild(label2);
+    return;
+  }
+
   if (!here) {
     addBtn('Поехать сюда', () => { startTravel(point.id); uiSelectedPointId = null; renderAll(); });
     return;
@@ -2949,6 +3004,11 @@ function renderPointPanel() {
   if (point.type === 'home') {
     EAT_OPTIONS.forEach(opt => addBtn(`${opt.label} (бесплатно)`, () => { startEating(opt.id); renderAll(); }));
     SLEEP_OPTIONS.forEach(opt => addBtn(opt.label, () => { startSleeping(opt.id); renderAll(); }));
+    const spec = vehicleSpec();
+    if (spec.fuel === 'electric') {
+      const missing = spec.tank - p.vehicle.fuel;
+      addBtn(missing <= 0.01 ? 'Заряжен полностью' : '🔌 Зарядить дома (бесплатно)', () => { startRefuel(); renderAll(); }, missing <= 0.01);
+    }
   }
   if (point.type === 'gas' || point.type === 'waystop') {
     const spec = vehicleSpec();
@@ -3165,6 +3225,10 @@ function renderStatusPanel() {
       progressFraction = clamp(p.refuelElapsed / p.refuelPlan.totalMinutes, 0, 1);
       remainingLabel = formatMinutesDuration(p.refuelPlan.totalMinutes - p.refuelElapsed);
     }
+  } else if (p.status === 'collapsed') {
+    text = 'Без сознания от недосыпа';
+    progressFraction = clamp(1 - p.collapseRemaining / FOOT_COLLAPSE_MINUTES, 0, 1);
+    remainingLabel = formatMinutesDuration(p.collapseRemaining);
   } else if (p.status === 'moving') {
     const a = p.activity;
     const remainingKm = Math.max(0, a.totalKm - a.traveledKm);
@@ -3715,6 +3779,9 @@ el('btn-export').onclick = () => {
   URL.revokeObjectURL(url);
 };
 el('btn-menu').onclick = () => { saveGame(); el('menu-modal').classList.add('hidden'); showMenuScreen(); };
+// Temporary testing aid: adds funds to the current save so vehicles other than
+// foot can actually be tried out. Remove once no longer needed for testing.
+el('btn-debug-money').onclick = () => { state.money += 100000; saveGame(); renderAll(); toast('Добавлено 100 000 ₽ (тест)'); };
 el('btn-offline-ok').onclick = () => el('offline-modal').classList.add('hidden');
 
 el('btn-diary').onclick = () => {
