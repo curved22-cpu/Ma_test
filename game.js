@@ -1087,6 +1087,19 @@ function migrateEconomyFields() {
   delete state.player.fatigue;
   delete state.player.warnedFatigue;
 
+  // A save left mid-rest/meal/refuel from just before the gradual-relief
+  // update landed could carry a plan missing its new *Start field, which
+  // silently corrupted hunger/sleepiness/fuel into NaN (an invalid CSS width
+  // that just reads as "the bar stopped moving"). simulateTick now self-heals
+  // any in-progress plan going forward, but a value that's already NaN needs
+  // a hard reset here since there's no valid prior value left to recover.
+  if (Number.isNaN(state.player.hunger)) state.player.hunger = 50;
+  if (Number.isNaN(state.player.sleepiness)) state.player.sleepiness = 50;
+  if (state.player.vehicle && Number.isNaN(state.player.vehicle.fuel)) {
+    const spec = VEHICLE_BY_ID[state.player.vehicle.type];
+    state.player.vehicle.fuel = spec ? spec.tank : Infinity;
+  }
+
   // jobIdSeq used to be a bare module variable that reset to 1 on every page
   // reload while old jobs (with higher ids) stayed in the save — new jobs could
   // then collide in id with still-unclaimed old ones, and every id-lookup
@@ -1930,6 +1943,11 @@ function simulateTick(dt, summary) {
     // than staying frozen until one lump-sum drop at the very end — so what
     // the bar shows always matches how rested he actually already is.
     if (p.restPlan.isSleep) {
+      // A plan already in progress from before this field existed (an old
+      // save) won't have it — back-fill instead of silently corrupting the
+      // math into NaN and freezing the bar. Fall back to a flat default if
+      // the current value is itself already NaN from that same old bug.
+      if (!Number.isFinite(p.restPlan.sleepinessStart)) p.restPlan.sleepinessStart = Number.isFinite(p.sleepiness) ? p.sleepiness : 50;
       const frac = clamp(p.restElapsed / p.restPlan.totalMinutes, 0, 1);
       p.sleepiness = clamp(p.restPlan.sleepinessStart - p.restPlan.sleepinessRelief * frac, 0, 100);
     }
@@ -1939,6 +1957,7 @@ function simulateTick(dt, summary) {
     }
   } else if (p.status === 'eating') {
     p.eatElapsed += dt;
+    if (!Number.isFinite(p.eatPlan.hungerStart)) p.eatPlan.hungerStart = Number.isFinite(p.hunger) ? p.hunger : 50;
     const frac = clamp(p.eatElapsed / p.eatPlan.totalMinutes, 0, 1);
     p.hunger = clamp(p.eatPlan.hungerStart - p.eatPlan.hungerRelief * frac, 0, 100);
     if (p.eatElapsed >= p.eatPlan.totalMinutes) {
@@ -1949,6 +1968,7 @@ function simulateTick(dt, summary) {
   } else if (p.status === 'refueling') {
     p.hunger = clamp(p.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
     p.refuelElapsed += dt;
+    if (!Number.isFinite(p.refuelPlan.fuelStart)) p.refuelPlan.fuelStart = Number.isFinite(p.vehicle.fuel) ? p.vehicle.fuel : 0;
     const frac = clamp(p.refuelElapsed / p.refuelPlan.totalMinutes, 0, 1);
     p.vehicle.fuel = p.refuelPlan.fuelStart + (p.refuelPlan.fuelTarget - p.refuelPlan.fuelStart) * frac;
     if (p.refuelElapsed >= p.refuelPlan.totalMinutes) {
