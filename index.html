@@ -63,6 +63,7 @@
       <div id="cargo-panel" class="hud-card hidden"></div>
       <button id="btn-open-garage" class="orders-open-btn secondary">🔧 Моя техника (<span id="garage-count">1</span>)</button>
       <button id="btn-open-orders" class="orders-open-btn">📋 Заказы (<span id="orders-count">0</span>)</button>
+      <button id="btn-open-company" class="orders-open-btn secondary">🏢 Компания</button>
     </aside>
   </section>
 
@@ -168,6 +169,15 @@
       <h2 id="garage-title">Моя техника</h2>
       <div id="garage-content"></div>
       <button id="btn-garage-close">Закрыть</button>
+    </div>
+  </div>
+
+  <div id="company-modal" class="modal hidden">
+    <div class="modal-box">
+      <button id="btn-company-close-x" class="modal-close-x">✕</button>
+      <h2>Компания</h2>
+      <div id="company-content"></div>
+      <button id="btn-company-close">Закрыть</button>
     </div>
   </div>
 

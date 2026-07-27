@@ -1050,7 +1050,25 @@ function newGameState() {
     stats: { jobsCompleted: 0, totalEarned: 0 },
     lastProcessedDay: 0,
     dailyExpense: { living: 0, vehicleUpkeep: 0, total: 0, day: 1 },
+    company: { registered: false }, // once true: intercity jobs/travel unlock (employees/garages come later)
   };
+}
+
+const COMPANY_HOME_CITY = 'rivnoe'; // the only city playable before registering a company
+const COMPANY_REGISTRATION_COST = 20000;
+function hasCarForCompany() {
+  return state.player.vehicles.some(v => { const spec = VEHICLE_BY_ID[v.type]; return spec && spec.cat === 'car'; });
+}
+function canRegisterCompany() {
+  return !state.company.registered && state.money >= COMPANY_REGISTRATION_COST && hasCarForCompany();
+}
+function registerCompany() {
+  if (state.company.registered) return;
+  if (!hasCarForCompany()) { toast('Нужна хотя бы одна легковая машина'); return; }
+  if (state.money < COMPANY_REGISTRATION_COST) { toast('Не хватает денег на регистрацию компании'); return; }
+  state.money -= COMPANY_REGISTRATION_COST;
+  state.company.registered = true;
+  log(`Зарегистрировал компанию-грузоперевозчика (${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽) — межгородские перевозки открыты`);
 }
 
 function dayIndexFromGameTime(gameTime) { return Math.floor((gameTime + DAY_START_OFFSET) / 1440); }
@@ -1090,6 +1108,10 @@ function initDailyEconomy() {
 function migrateEconomyFields() {
   if (typeof state.lastProcessedDay !== 'number') state.lastProcessedDay = dayIndexFromGameTime(state.gameTime);
   if (!state.dailyExpense) rollDailyExpense();
+  // A save from before the company system existed already had the run of the
+  // whole country — grandfather it in as "registered" rather than retroactively
+  // locking existing progress down to one city.
+  if (!state.company) state.company = { registered: true };
   if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
   if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
   if (typeof state.player.warnedSleepy !== 'boolean') state.player.warnedSleepy = false;
@@ -1213,6 +1235,15 @@ function formatVolumeM3(liters) {
 // ---------- jobs: generation, taking, pickup, delivery ----------
 
 function pickJobEndpoints() {
+  // Before the company is registered, the courier only works the home city —
+  // no cross-country hauls to generate at all yet.
+  if (!state.company.registered) {
+    const pts = DELIVERY_BY_CITY[COMPANY_HOME_CITY];
+    const fromId = pick(pts);
+    let toId = pick(pts), guard = 0;
+    while (toId === fromId && guard++ < 20) toId = pick(pts);
+    return { fromId, toId };
+  }
   // Most jobs stay inside one city (walkable/bikeable); only a minority are
   // genuine cross-country hauls that need a real vehicle.
   if (Math.random() < 0.8 && CITIES_WITH_DELIVERY.length > 0) {
@@ -1343,6 +1374,7 @@ function takeJob(jobId) {
   const idx = state.availableJobs.findIndex(j => j.id === jobId);
   if (idx === -1) return;
   const job = state.availableJobs[idx];
+  if (!jobWithinCompanyReach(job)) { toast('Пока нет своей компании — доступны только заказы внутри Ривного'); return; }
   if (!jobPickupReachable(job)) { toast('Пешком до места забора не дойти — этот заказ недоступен'); return; }
   if (!jobFitsVehicle(job)) { toast('Не подходит для текущего транспорта — вес, объём или снаряжение'); return; }
   state.availableJobs.splice(idx, 1);
@@ -1633,6 +1665,10 @@ function beginTravelFromWaypoints(path) {
 function startTravel(targetId) {
   const p = state.player;
   if (p.status === 'collapsed') { toast('Без сознания — сейчас никуда не пойдёт'); return; }
+  if (!state.company.registered && pointSpace(targetId) !== COMPANY_HOME_CITY) {
+    toast('Пока нет своей компании — работаешь только в Ривном. Зарегистрируй компанию, чтобы возить между городами.');
+    return;
+  }
   if (p.status === 'moving' && p.activity) {
     if (p.activity.problemPending) { toast('Сначала реши проблему в пути'); return; }
     const edge = currentEdgeState();
@@ -3114,6 +3150,13 @@ function renderCargoPanel() {
 
 let lastOrdersSignature = null;
 let lastOrdersRenderRealTime = 0;
+// Before the company is registered, intercity jobs shouldn't even be takeable
+// (job generation already avoids them, but this covers any stray one already
+// sitting in the pool from before registration, or from an old save).
+function jobWithinCompanyReach(job) {
+  return state.company.registered || (pointSpace(job.fromId) === COMPANY_HOME_CITY && pointSpace(job.toId) === COMPANY_HOME_CITY);
+}
+
 // A pickup a foot courier can't practically walk to right now (wrong settlement
 // entirely) — this blocks taking the job outright: there's no point reserving
 // a delivery you have no way of even starting.
@@ -3183,15 +3226,16 @@ function renderOrdersList() {
     info.className = 'job-info';
     const pickupKm = orderFilters.sort === 'distance' ? pathDistanceKm(shortestPath(state.player.positionId, job.fromId)) : null;
     const pickupDistTag = pickupKm !== null ? ` · забрать за ${formatKm(pickupKm)} км` : '';
+    const withinReach = jobWithinCompanyReach(job);
     info.innerHTML = `<div>${STORAGE_GLYPH[job.storage]} <b>${job.itemName}</b> — ${job.weightKg} кг / ${formatVolumeM3(job.volumeL)}</div>` +
       `<div class="job-sub">${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)} · ${job.distanceKm} км${pickupDistTag}</div>` +
-      `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!jobPickupReachable(job) ? ' · пешком туда не дойти' : !fits ? ' · не подходит' : ''}</div>`;
+      `<div class="job-sub">${job.urgencyKey === 'urgent' ? '🔥' : job.urgencyKey === 'standard' ? '🕐' : '∞'} ${formatDeadline(job.deadlineReal)}${!withinReach ? ' · нужна своя компания' : !jobPickupReachable(job) ? ' · пешком туда не дойти' : !fits ? ' · не подходит' : ''}</div>`;
     const pay = document.createElement('span');
     pay.className = 'job-pay';
     pay.textContent = `${job.payout} ₽`;
     const btn = document.createElement('button');
     btn.textContent = 'Взять';
-    btn.disabled = !canTakeMore || !jobPickupReachable(job) || !fits;
+    btn.disabled = !canTakeMore || !withinReach || !jobPickupReachable(job) || !fits;
     btn.onclick = () => { takeJob(job.id); renderAll(); };
     li.append(info, pay, btn);
     ul.appendChild(li);
@@ -3466,6 +3510,40 @@ function openWorkshop() {
     ? 'У пешехода нет подвески — недоступно'
     : (upgraded ? 'Подвеска уже укреплена' : 'Снижает шанс серьёзных поломок');
   el('workshop-modal').classList.remove('hidden');
+}
+
+// ---------- company ----------
+
+function renderCompanyContent() {
+  const box = el('company-content');
+  box.innerHTML = '';
+  if (!state.company.registered) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = 'Пока ты просто курьер и работаешь только в Ривном. Зарегистрируй свою компанию-грузоперевозчика, чтобы возить заказы между городами и нанимать сотрудников.';
+    box.appendChild(p);
+    const reqList = document.createElement('div');
+    const hasCar = hasCarForCompany();
+    const hasMoney = state.money >= COMPANY_REGISTRATION_COST;
+    reqList.innerHTML = `
+      <div class="job-sub">${hasMoney ? '✅' : '❌'} ${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽ на регистрацию</div>
+      <div class="job-sub">${hasCar ? '✅' : '❌'} Хотя бы одна легковая машина</div>
+    `;
+    box.appendChild(reqList);
+    const btn = document.createElement('button');
+    btn.textContent = `Зарегистрировать компанию — ${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽`;
+    btn.disabled = !canRegisterCompany();
+    btn.onclick = () => { registerCompany(); renderCompanyContent(); renderAll(); };
+    box.appendChild(btn);
+  } else {
+    const p = document.createElement('p');
+    p.textContent = '✅ Компания зарегистрирована — межгородские перевозки открыты.';
+    box.appendChild(p);
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = 'Найм сотрудников и гаражи появятся здесь в следующих обновлениях.';
+    box.appendChild(hint);
+  }
 }
 
 // ---------- garage (owned vehicles) ----------
@@ -3801,6 +3879,10 @@ el('sort-orders').onchange = (e) => { orderFilters.sort = e.target.value; lastOr
 
 el('btn-open-garage').onclick = () => openGarage();
 el('btn-garage-close').onclick = () => el('garage-modal').classList.add('hidden');
+
+el('btn-open-company').onclick = () => { el('company-modal').classList.remove('hidden'); renderCompanyContent(); };
+el('btn-company-close').onclick = () => el('company-modal').classList.add('hidden');
+el('btn-company-close-x').onclick = () => el('company-modal').classList.add('hidden');
 
 el('btn-expenses').onclick = () => openExpenses();
 el('btn-expenses-close').onclick = () => el('expenses-modal').classList.add('hidden');
