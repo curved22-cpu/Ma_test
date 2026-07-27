@@ -258,6 +258,7 @@ const POINT_STYLES = {
   delivery: { color: '#4a9dd1', glyph: '📦' },
   gas: { color: '#d1574a', glyph: '⛽' },
   waystop: { color: '#4aa17a', glyph: '⛽' },
+  garage: { color: '#3fae6b', glyph: '🅿️' },
 };
 
 // ---------- Ривное — стартовый (полностью авторский) город ----------
@@ -275,6 +276,7 @@ const RIVNOE_POINTS_RAW = [
   { id: 'market', name: 'Рынок', type: 'delivery', x: 28, y: 66, hours: { open: 7 * 60, close: 19 * 60 } },
   { id: 'district', name: 'Спальный район', type: 'delivery', x: 85, y: 85, hours: { always: true } },
   { id: 'park', name: 'Парк Победы', type: 'delivery', x: 15, y: 82, hours: { open: 6 * 60, close: 23 * 60 } },
+  { id: 'garage', name: 'Гараж компании', type: 'garage', x: 62, y: 62, hours: { always: true } },
 ];
 const RIVNOE_EDGES_RAW = [
   ['home', 'park'], ['home', 'cafe'],
@@ -286,6 +288,7 @@ const RIVNOE_EDGES_RAW = [
   ['market', 'park'], ['market', 'district'], ['market', 'warehouse'],
   ['park', 'district'],
   ['market', 'gas'], ['warehouse', 'gas'],
+  ['garage', 'workshop'], ['garage', 'warehouse'],
 ];
 
 // ---------- country cities ----------
@@ -478,11 +481,12 @@ const SETTLEMENT_NAME_POOLS = {
   workshop: ['Мастерская «Гайка»', 'Автосервис', 'СТО «Мотор»'],
   gas: ['АЗС «Полный бак»', 'Заправка', 'АЗС №3'],
   shop: ['Магазин техники «Скорость»', 'Мото-Авто Центр', 'Салон техники', 'Магазин «Колесо»'],
+  garage: ['Гараж компании', 'Автобаза', 'Транспортный двор', 'Грузовой двор'],
 };
 const SETTLEMENT_POINT_TYPE = {
   market: 'delivery', warehouse: 'delivery', bus: 'delivery', busStop: 'delivery',
   hospital: 'delivery', clinic: 'delivery', mall: 'delivery', district: 'delivery', park: 'delivery',
-  cafe: 'cafe', workshop: 'workshop', gas: 'gas', shop: 'shop',
+  cafe: 'cafe', workshop: 'workshop', gas: 'gas', shop: 'shop', garage: 'garage',
 };
 // Every organization keeps its own hours; a few run round the clock.
 const HOURS_BY_KIND = {
@@ -499,6 +503,7 @@ const HOURS_BY_KIND = {
   workshop: { open: 9 * 60, close: 19 * 60 },
   gas: { always: true },
   shop: { open: 9 * 60, close: 20 * 60 },
+  garage: { always: true }, // company property — accessible round the clock
 };
 function hoursForKind(kind, rng) {
   const base = HOURS_BY_KIND[kind];
@@ -613,6 +618,9 @@ function buildSettlementLayout(cityId, tier) {
   if (blueprint.shop) kinds.push('shop');
   if (blueprint.workshop) kinds.push('workshop');
   if (rng() < blueprint.gasChance) kinds.push('gas');
+  // Every settlement gets exactly one company garage slot, regardless of
+  // tier — it's what makes it purchasable later, not something built in.
+  kinds.push('garage');
 
   const isUrban = tier === 'big' || tier === 'metro';
   const points = isUrban ? buildUrbanPoints(kinds, tier, rng, used) : buildOrganicPoints(kinds, rng, used);
@@ -1050,7 +1058,7 @@ function newGameState() {
     stats: { jobsCompleted: 0, totalEarned: 0 },
     lastProcessedDay: 0,
     dailyExpense: { living: 0, vehicleUpkeep: 0, total: 0, day: 1 },
-    company: { registered: false }, // once true: intercity jobs/travel unlock (employees/garages come later)
+    company: { registered: false, garages: {} }, // once registered: intercity jobs/travel + garages unlock (employees come later)
   };
 }
 
@@ -1069,6 +1077,36 @@ function registerCompany() {
   state.money -= COMPANY_REGISTRATION_COST;
   state.company.registered = true;
   log(`Зарегистрировал компанию-грузоперевозчика (${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽) — межгородские перевозки открыты`);
+}
+
+// ---------- company garages ----------
+// One purchasable garage slot per settlement — a company-funded stand-in for
+// "home" while out on the road: free eat/sleep/repair (and free EV charging,
+// same as at home) for whoever is standing there, no travel back to Rivnoe.
+const GARAGE_COST_BY_TIER = { village: 8000, small: 18000, big: 40000, metro: 80000 };
+function garageCostForCity(cityId) {
+  return GARAGE_COST_BY_TIER[SETTLEMENT_TIER[cityId] || 'village'];
+}
+function hasGarageInCity(cityId) {
+  return !!(state.company.garages && state.company.garages[cityId]);
+}
+function buyGarage(cityId) {
+  if (!state.company.registered) { toast('Нужна своя компания, чтобы покупать гаражи'); return; }
+  if (hasGarageInCity(cityId)) return;
+  const cost = garageCostForCity(cityId);
+  if (state.money < cost) { toast('Не хватает денег на гараж'); return; }
+  state.money -= cost;
+  state.company.garages[cityId] = true;
+  log(`Купил гараж компании в городе «${cityMeta(cityId).name}» (${cost.toLocaleString('ru-RU')} ₽)`);
+}
+function garageRepair() {
+  const p = state.player;
+  if (p.status !== 'idle') return;
+  const point = pointById(p.positionId);
+  if (point.type !== 'garage' || !hasGarageInCity(pointSpace(point.id))) return;
+  if (p.vehicle.condition >= 100) return;
+  p.vehicle.condition = 100;
+  log('Бесплатный ремонт в гараже компании');
 }
 
 function dayIndexFromGameTime(gameTime) { return Math.floor((gameTime + DAY_START_OFFSET) / 1440); }
@@ -1111,7 +1149,8 @@ function migrateEconomyFields() {
   // A save from before the company system existed already had the run of the
   // whole country — grandfather it in as "registered" rather than retroactively
   // locking existing progress down to one city.
-  if (!state.company) state.company = { registered: true };
+  if (!state.company) state.company = { registered: true, garages: {} };
+  if (!state.company.garages) state.company.garages = {};
   if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
   if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
   if (typeof state.player.warnedSleepy !== 'boolean') state.player.warnedSleepy = false;
@@ -1538,27 +1577,32 @@ function startEating(optionId) {
   if (p.status !== 'idle') return;
   const point = pointById(p.positionId);
   const isHome = point.type === 'home';
-  const canEatHere = isHome || point.type === 'cafe' || point.type === 'waystop';
+  const isCompanyGarage = point.type === 'garage' && hasGarageInCity(pointSpace(point.id));
+  const canEatHere = isHome || isCompanyGarage || point.type === 'cafe' || point.type === 'waystop';
   if (!canEatHere) return;
   if (!isPointOpenNow(point)) { toast('Закрыто — придётся подождать открытия'); return; }
   const opt = EAT_OPTIONS.find(o => o.id === optionId);
-  const cost = isHome ? 0 : EAT_PRICE_CAFE[optionId];
+  const free = isHome || isCompanyGarage;
+  const cost = free ? 0 : EAT_PRICE_CAFE[optionId];
   if (state.money < cost) { toast('Не хватает денег'); return; }
   state.money -= cost;
   p.status = 'eating';
   p.eatElapsed = 0;
   p.eatPlan = { totalMinutes: opt.minutes, hungerRelief: opt.hungerRelief, label: opt.label, hungerStart: p.hunger };
-  log(isHome ? `Ест дома (${opt.label})` : `Ест: ${opt.label} (${cost} ₽)`, { silent: true });
+  log(isHome ? `Ест дома (${opt.label})` : isCompanyGarage ? `Ест в гараже компании (${opt.label})` : `Ест: ${opt.label} (${cost} ₽)`, { silent: true });
 }
 
 function startSleeping(optionId) {
   const p = state.player;
-  if (p.status !== 'idle' || pointById(p.positionId).type !== 'home') return;
+  const point = pointById(p.positionId);
+  const isHome = point.type === 'home';
+  const isCompanyGarage = point.type === 'garage' && hasGarageInCity(pointSpace(point.id));
+  if (p.status !== 'idle' || !(isHome || isCompanyGarage)) return;
   const opt = SLEEP_OPTIONS.find(o => o.id === optionId);
   p.status = 'resting';
   p.restElapsed = 0;
   p.restPlan = { totalMinutes: opt.minutes, sleepinessRelief: opt.sleepinessRelief, isSleep: true, label: opt.label, sleepinessStart: p.sleepiness };
-  log(`Лёг спать дома: ${opt.label}`, { silent: true });
+  log(isHome ? `Лёг спать дома: ${opt.label}` : `Лёг спать в гараже компании: ${opt.label}`, { silent: true });
 }
 
 function startVehicleSleep(optionId) {
@@ -1590,9 +1634,11 @@ function startRefuel() {
   const spec = vehicleSpec();
   if (spec.fuel === 'legs') return;
   const point = pointById(p.positionId);
-  // Charging an EV at home off your own outlet is free — everywhere else
-  // (gas station, waystop) it's priced normally, same as any other fuel type.
-  const atHome = point.type === 'home' && spec.fuel === 'electric';
+  // Charging an EV at home (or at an owned company garage) off the mains is
+  // free — everywhere else (gas station, waystop) it's priced normally, same
+  // as any other fuel type.
+  const isCompanyGarage = point.type === 'garage' && hasGarageInCity(pointSpace(point.id));
+  const atHome = (point.type === 'home' || isCompanyGarage) && spec.fuel === 'electric';
   if (!atHome && point.type !== 'gas' && point.type !== 'waystop') return;
   if (p.status !== 'idle') return;
   if (!atHome && !isPointOpenNow(point)) { toast('Закрыто — придётся подождать открытия'); return; }
@@ -1605,9 +1651,9 @@ function startRefuel() {
   p.refuelElapsed = 0;
   p.refuelPlan = {
     totalMinutes: Math.max(2, Math.round((missing / spec.tank) * REFUEL_MINUTES_FULL)),
-    fuelStart: p.vehicle.fuel, fuelTarget: spec.tank, label: atHome ? 'Зарядка дома' : 'Заправка',
+    fuelStart: p.vehicle.fuel, fuelTarget: spec.tank, label: !atHome ? 'Заправка' : (isCompanyGarage ? 'Зарядка в гараже компании' : 'Зарядка дома'),
   };
-  log(atHome ? 'Поставил заряжаться дома' : `Начал заправляться (${cost} ₽)`, { silent: true });
+  log(!atHome ? `Начал заправляться (${cost} ₽)` : (isCompanyGarage ? 'Поставил заряжаться в гараже компании' : 'Поставил заряжаться дома'), { silent: true });
 }
 
 // ---------- travel ----------
@@ -3054,7 +3100,28 @@ function renderPointPanel() {
       addBtn(missing <= 0.01 ? 'Бак полон' : `⛽ Заправиться — ${cost} ₽`, () => { startRefuel(); renderAll(); }, missing <= 0.01 || state.money < cost || !openNow);
     }
   }
-  if (point.type !== 'home' && vehicleCanSleepIn(vehicleSpec())) {
+  if (point.type === 'garage') {
+    const citySpace = pointSpace(point.id);
+    if (!state.company.registered) {
+      const l = document.createElement('div');
+      l.className = 'job-sub';
+      l.textContent = 'Нужна своя компания — оформи регистрацию в меню «Компания»';
+      panel.appendChild(l);
+    } else if (!hasGarageInCity(citySpace)) {
+      const cost = garageCostForCity(citySpace);
+      addBtn(`Купить гараж — ${cost.toLocaleString('ru-RU')} ₽`, () => { buyGarage(citySpace); renderAll(); }, state.money < cost);
+    } else {
+      EAT_OPTIONS.forEach(opt => addBtn(`${opt.label} (за счёт компании)`, () => { startEating(opt.id); renderAll(); }));
+      SLEEP_OPTIONS.forEach(opt => addBtn(opt.label, () => { startSleeping(opt.id); renderAll(); }));
+      const spec = vehicleSpec();
+      if (spec.fuel === 'electric') {
+        const missing = spec.tank - p.vehicle.fuel;
+        addBtn(missing <= 0.01 ? 'Заряжен полностью' : '🔌 Зарядить (за счёт компании)', () => { startRefuel(); renderAll(); }, missing <= 0.01);
+      }
+      addBtn(p.vehicle.condition >= 100 ? 'Техника в порядке' : '🔧 Ремонт (за счёт компании)', () => { garageRepair(); renderAll(); }, p.vehicle.condition >= 100);
+    }
+  }
+  if (point.type !== 'home' && point.type !== 'garage' && vehicleCanSleepIn(vehicleSpec())) {
     VEHICLE_SLEEP_OPTIONS.forEach(opt => addBtn(opt.label, () => { startVehicleSleep(opt.id); renderAll(); }));
   }
 }
@@ -3539,9 +3606,44 @@ function renderCompanyContent() {
     const p = document.createElement('p');
     p.textContent = '✅ Компания зарегистрирована — межгородские перевозки открыты.';
     box.appendChild(p);
+
+    const garageHeading = document.createElement('h3');
+    garageHeading.textContent = 'Гаражи';
+    box.appendChild(garageHeading);
+    const garageHint = document.createElement('p');
+    garageHint.className = 'hint';
+    garageHint.textContent = 'В каждом городе есть один участок под гараж компании — бесплатные еда, сон, ремонт и зарядка электротранспорта для тебя (и позже для сотрудников).';
+    box.appendChild(garageHint);
+
+    const garageList = document.createElement('ul');
+    garageList.className = 'garage-list';
+    COUNTRY_CITIES.forEach(city => {
+      const owned = hasGarageInCity(city.id);
+      const cost = garageCostForCity(city.id);
+      const li = document.createElement('li');
+      li.className = owned ? 'active-vehicle' : '';
+      const icon = document.createElement('div');
+      icon.className = 'garage-icon';
+      icon.textContent = '🅿️';
+      const info = document.createElement('div');
+      info.className = 'garage-info';
+      info.innerHTML = `${owned ? '<span class="garage-badge">Куплен</span><br>' : ''}<b>${city.name}</b><div class="garage-sub">${TIER_LABEL[city.tier] || city.tier}</div>`;
+      li.append(icon, info);
+      if (!owned) {
+        const buyBtn = document.createElement('button');
+        buyBtn.className = 'garage-buy-btn';
+        buyBtn.textContent = `${cost.toLocaleString('ru-RU')} ₽`;
+        buyBtn.disabled = state.money < cost;
+        buyBtn.onclick = () => { buyGarage(city.id); renderCompanyContent(); renderAll(); };
+        li.appendChild(buyBtn);
+      }
+      garageList.appendChild(li);
+    });
+    box.appendChild(garageList);
+
     const hint = document.createElement('p');
     hint.className = 'hint';
-    hint.textContent = 'Найм сотрудников и гаражи появятся здесь в следующих обновлениях.';
+    hint.textContent = 'Найм сотрудников появится здесь в следующих обновлениях.';
     box.appendChild(hint);
   }
 }

@@ -249,6 +249,7 @@ html, body { height: 100%; margin: 0; }
 .garage-list .garage-info { flex: 1; text-align: left; }
 .garage-list .garage-badge { font-size: 0.72rem; color: #7fd17f; font-weight: 700; text-transform: uppercase; }
 .garage-list .garage-sub { color: #9aa4b2; font-size: 0.78rem; }
+.garage-list .garage-buy-btn { width: auto; margin: 0; padding: 6px 10px; font-size: 0.78rem; flex-shrink: 0; }
 
 .garage-detail { text-align: left; }
 .garage-detail-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
