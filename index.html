@@ -61,9 +61,22 @@
 
     <aside id="side-panel">
       <div id="cargo-panel" class="hud-card hidden"></div>
-      <button id="btn-open-garage" class="orders-open-btn secondary">🔧 Моя техника (<span id="garage-count">1</span>)</button>
-      <button id="btn-open-orders" class="orders-open-btn">📋 Заказы (<span id="orders-count">0</span>)</button>
-      <button id="btn-open-company" class="orders-open-btn secondary">🏢 Компания</button>
+      <div class="tab-bar">
+        <button id="btn-open-garage" class="tab-btn">
+          <span class="tab-badge" id="garage-count">1</span>
+          <span class="tab-icon">🔧</span>
+          <span class="tab-label">Техника</span>
+        </button>
+        <button id="btn-open-orders" class="tab-btn">
+          <span class="tab-badge" id="orders-count">0</span>
+          <span class="tab-icon">📋</span>
+          <span class="tab-label">Заказы</span>
+        </button>
+        <button id="btn-open-company" class="tab-btn">
+          <span class="tab-icon">🏢</span>
+          <span class="tab-label">Компания</span>
+        </button>
+      </div>
     </aside>
   </section>
 

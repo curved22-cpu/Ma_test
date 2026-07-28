@@ -46,22 +46,27 @@ button:disabled { opacity: 0.4; cursor: default; }
 
 html, body { height: 100%; margin: 0; }
 
+/* The whole screen is pinned to exactly one viewport height — the map (the
+   only flexible element, flex:1) absorbs whatever's left after the vitals
+   bar and the bottom tab bar/cargo panel take their natural size, so the
+   page itself never needs to scroll on a phone. */
 #game-screen.game-layout {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 100vh;
-  min-height: 100dvh;
-  padding: 12px;
+  gap: 10px;
+  height: 100vh;
+  height: 100dvh;
+  padding: 10px;
   max-width: 520px;
   margin: 0 auto;
+  overflow: hidden;
 }
 
 #map-stage {
   position: relative;
   width: 100%;
-  aspect-ratio: 3 / 4;
-  min-height: 340px;
+  flex: 1 1 auto;
+  min-height: 200px;
   border-radius: 16px;
   overflow: hidden;
   border: 2px solid #3a4250;
@@ -107,9 +112,10 @@ html, body { height: 100%; margin: 0; }
 .expenses-row .expenses-label { color: #9aa4b2; }
 
 .hud-vitals {
+  flex-shrink: 0;
   display: flex; gap: 16px; justify-content: center;
   background: linear-gradient(160deg, #1c232d, #161b22);
-  padding: 8px 14px;
+  padding: 6px 14px;
   border-radius: 12px;
   border: 1px solid #3a4250;
   box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -182,9 +188,10 @@ html, body { height: 100%; margin: 0; }
 
 #side-panel {
   width: 100%;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   padding: 2px;
 }
 
@@ -192,46 +199,68 @@ html, body { height: 100%; margin: 0; }
   background: linear-gradient(160deg, #1c232d, #161b22);
   border: 1px solid #3a4250;
   border-radius: 12px;
-  padding: 12px;
+  padding: 8px 10px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 
-.cargo-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cargo-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .cargo-vehicle-icon {
-  font-size: 1.8rem;
+  font-size: 1.3rem;
   background: #0d1015;
   border: 1px solid #3a4250;
-  border-radius: 10px;
-  width: 46px; height: 46px;
+  border-radius: 8px;
+  width: 32px; height: 32px;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
-.cargo-header-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.cargo-header-text { font-size: 0.85rem; }
-.cargo-header-text b { font-size: 0.95rem; }
+.cargo-header-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cargo-header-text { font-size: 0.75rem; }
+.cargo-header-text b { font-size: 0.82rem; }
 
-.cargo-cap-row { display: flex; align-items: center; gap: 8px; font-size: 0.7rem; color: #9aa4b2; }
+.cargo-cap-row { display: flex; align-items: center; gap: 6px; font-size: 0.64rem; color: #9aa4b2; }
 .cargo-cap-row span { flex-shrink: 0; white-space: nowrap; }
-.cargo-cap-row .vital-track { flex: 1; width: auto; height: 7px; }
+.cargo-cap-row .vital-track { flex: 1; width: auto; height: 5px; }
 
-.cargo-grid { display: flex; flex-direction: column; gap: 6px; }
+/* Capped and internally scrollable — with up to MAX_PENDING_JOBS chips this
+   could otherwise grow tall enough to push the map off-screen; a small
+   scroll here keeps the whole page itself from ever needing to scroll. */
+.cargo-grid { display: flex; flex-direction: column; gap: 5px; max-height: 92px; overflow-y: auto; }
 .cargo-chip {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px;
   background: #1e2934;
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-radius: 7px;
+  padding: 5px 8px;
   border: 1px solid #3a4250;
-  font-size: 0.82rem;
+  font-size: 0.74rem;
 }
 .cargo-chip.pending { border-style: dashed; opacity: 0.8; }
 .cargo-chip.loaded { border-color: #4a9dd1; }
-.cargo-chip-glyph { font-size: 1.2rem; flex-shrink: 0; }
+.cargo-chip-glyph { font-size: 1rem; flex-shrink: 0; }
 .cargo-chip-name { flex: 1 1 auto; min-width: 120px; }
-.cargo-chip-meta { color: #9aa4b2; font-size: 0.75rem; white-space: nowrap; margin-left: auto; }
-.cargo-chip button { flex: 1 0 100%; padding: 7px 10px; font-size: 0.78rem; margin-top: 2px; }
+.cargo-chip-meta { color: #9aa4b2; font-size: 0.68rem; white-space: nowrap; margin-left: auto; }
+.cargo-chip button { flex: 1 0 100%; padding: 5px 10px; font-size: 0.72rem; margin-top: 1px; }
 
-.orders-open-btn { width: 100%; font-weight: 700; font-size: 1.05rem; padding: 14px 16px; }
-.orders-open-btn.secondary { font-size: 0.95rem; font-weight: 600; padding: 12px 16px; opacity: 0.92; }
+.tab-bar { display: flex; gap: 8px; }
+.tab-btn {
+  position: relative;
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px;
+  padding: 7px 4px 6px;
+}
+.tab-icon { font-size: 1.25rem; line-height: 1; }
+.tab-label { font-size: 0.66rem; font-weight: 600; line-height: 1; }
+.tab-badge {
+  position: absolute; top: 3px; right: 8px;
+  background: #d1574a; color: #fff;
+  font-size: 0.62rem; font-weight: 700;
+  border-radius: 999px;
+  min-width: 16px; height: 16px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 3px;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
 
 .garage-box { max-width: 460px; }
 .garage-list { list-style: none; padding: 0; margin: 0 0 8px; text-align: left; }
