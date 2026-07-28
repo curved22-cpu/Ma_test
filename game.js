@@ -1143,7 +1143,7 @@ function licenseAllowsVehicleCat(license, cat) {
 const HIRE_FEE_BY_LICENSE = { none: 3000, M: 6000, A: 9000, B: 15000, C: 30000 };
 const JOB_PREF_OPTIONS = [
   { id: 'expensive', label: 'Самые дорогие заказы' },
-  { id: 'fastest', label: 'Самые срочные заказы' },
+  { id: 'fastest', label: 'Самые быстрые (короткие) заказы' },
   { id: 'closest', label: 'Заказы ближе к нему' },
 ];
 
@@ -1170,13 +1170,19 @@ function hireEmployee(candidateIdx, vehicleType) {
   if (!licenseAllowsVehicleCat(cand.license, spec.cat)) { toast('У этого сотрудника нет прав на такой транспорт'); return; }
   state.money -= cand.fee;
   veh.assignedTo = state.company.employeeIdSeq;
-  state.company.employees.push({ id: state.company.employeeIdSeq++, name: cand.name, license: cand.license, vehicleType, jobPref: 'expensive' });
+  state.company.employees.push({
+    id: state.company.employeeIdSeq++, name: cand.name, license: cand.license, vehicleType, jobPref: 'expensive',
+    working: false, status: 'afk', positionId: state.player.positionId,
+    hunger: 30, sleepiness: 20, activity: null, earnings: 0,
+    taskElapsed: 0, taskTotal: 0, trainingRemaining: 0, trainingTarget: null,
+  });
   candidatePool.splice(candidateIdx, 1);
   log(`Нанял сотрудника: ${cand.name} (${LICENSE_LABEL[cand.license]}) — выдал «${spec.name}» (${cand.fee.toLocaleString('ru-RU')} ₽)`);
 }
 function fireEmployee(employeeId) {
   const emp = state.company.employees.find(e => e.id === employeeId);
   if (!emp) return;
+  if (!employeeIsFree(emp)) { toast('Сначала дождись, пока сотрудник освободится'); return; }
   const veh = state.player.vehicles.find(v => v.type === emp.vehicleType);
   if (veh) veh.assignedTo = null;
   state.company.employees = state.company.employees.filter(e => e.id !== employeeId);
@@ -1185,6 +1191,217 @@ function fireEmployee(employeeId) {
 function setEmployeeJobPref(employeeId, pref) {
   const emp = state.company.employees.find(e => e.id === employeeId);
   if (emp) emp.jobPref = pref;
+}
+
+// An employee mid-delivery or mid-course can't be reassigned out from under
+// the job/training without either abandoning cargo or wasting the fee already
+// paid — so every management action below requires them to be free first.
+function employeeIsFree(emp) { return emp.status !== 'moving' && emp.status !== 'training'; }
+
+function toggleEmployeeWorking(employeeId) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  if (emp.status === 'training') { toast('Сотрудник сейчас на курсах — недоступен'); return; }
+  if (!emp.working) {
+    if (!emp.vehicleType) { toast('Сначала выдай сотруднику транспорт'); return; }
+    emp.working = true;
+    if (emp.status === 'afk') emp.status = 'idle';
+  } else {
+    emp.working = false;
+    // If he's out mid-delivery, let him finish it — the tick loop sends him
+    // AFK on his own once he's free again, same as the player logging off.
+    if (emp.status === 'idle') emp.status = 'afk';
+  }
+}
+
+function takeEmployeeVehicle(employeeId) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  if (!employeeIsFree(emp)) { toast('Сначала дождись, пока сотрудник освободится'); return; }
+  if (!emp.vehicleType) return;
+  const veh = state.player.vehicles.find(v => v.type === emp.vehicleType);
+  if (veh) veh.assignedTo = null;
+  emp.vehicleType = null;
+  emp.working = false;
+  emp.status = 'afk';
+  emp.activity = null;
+  log(`Забрал транспорт у сотрудника ${emp.name} — переведён в АФК`);
+}
+
+function assignEmployeeVehicle(employeeId, vehicleType) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  if (!employeeIsFree(emp)) { toast('Сначала дождись, пока сотрудник освободится'); return; }
+  const veh = state.player.vehicles.find(v => v.type === vehicleType);
+  if (!veh || veh === state.player.vehicle || veh.assignedTo) { toast('Этот транспорт сейчас недоступен'); return; }
+  const spec = VEHICLE_BY_ID[vehicleType];
+  if (!licenseAllowsVehicleCat(emp.license, spec.cat)) { toast('У сотрудника нет прав на такой транспорт'); return; }
+  if (emp.vehicleType) {
+    const oldVeh = state.player.vehicles.find(v => v.type === emp.vehicleType);
+    if (oldVeh) oldVeh.assignedTo = null;
+  }
+  veh.assignedTo = emp.id;
+  emp.vehicleType = vehicleType;
+  log(`Выдал сотруднику ${emp.name} транспорт: ${spec.name}`);
+}
+
+function sendEmployeeToGarage(employeeId, cityId) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  if (!hasGarageInCity(cityId)) { toast('В этом городе нет гаража компании'); return; }
+  if (!employeeIsFree(emp)) { toast('Сначала дождись, пока сотрудник освободится'); return; }
+  emp.positionId = `${cityId}:garage`;
+  emp.activity = null;
+  emp.working = false;
+  emp.status = 'afk';
+  log(`Отправил сотрудника ${emp.name} в гараж компании (${cityMeta(cityId).name})`);
+}
+
+const LICENSE_UPGRADE_COST = { M: 8000, A: 12000, B: 20000, C: 35000 };
+const TRAINING_WAGE_PER_DAY = 200;
+const TRAINING_DAYS = 14;
+function startEmployeeTraining(employeeId) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  const idx = LICENSE_TIERS_ORDER.indexOf(emp.license);
+  if (idx >= LICENSE_TIERS_ORDER.length - 1) { toast('У сотрудника уже максимальная категория'); return; }
+  if (!employeeIsFree(emp)) { toast('Сначала дождись, пока сотрудник освободится'); return; }
+  const targetLicense = LICENSE_TIERS_ORDER[idx + 1];
+  const cost = LICENSE_UPGRADE_COST[targetLicense] + TRAINING_WAGE_PER_DAY * TRAINING_DAYS;
+  if (state.money < cost) { toast('Не хватает денег на обучение сотрудника'); return; }
+  state.money -= cost;
+  emp.working = false;
+  emp.status = 'training';
+  emp.trainingTarget = targetLicense;
+  emp.trainingRemaining = TRAINING_DAYS * 1440;
+  emp.activity = null;
+  log(`Отправил сотрудника ${emp.name} на курсы повышения категории до «${targetLicense}» (${cost.toLocaleString('ru-RU')} ₽, ~${TRAINING_DAYS} дней, минимальная зарплата всё время курса)`);
+}
+
+// ---------- employee autonomous work loop ----------
+// Deliberately simplified compared to the player's own simulation: employees
+// ignore fuel/condition/breakdowns entirely (their vehicle never runs dry or
+// wears out) and can only take plain "normal"-storage jobs (no equipment
+// inventory of their own yet). This keeps N employees cheap to simulate every
+// tick while still giving each one a real position, a real job cycle, and
+// real hunger/sleepiness that has to be tended to.
+const EMPLOYEE_EAT_THRESHOLD = 75;
+const EMPLOYEE_SLEEP_THRESHOLD = 75;
+const EMPLOYEE_EAT_MINUTES = 60;
+const EMPLOYEE_SLEEP_MINUTES = 240;
+const EMPLOYEE_MEAL_COST_NO_GARAGE = 150;
+const EMPLOYEE_SLEEP_COST_NO_GARAGE = 400;
+const EMPLOYEE_STATUS_LABEL = {
+  afk: '🔴 АФК (за свой счёт)',
+  idle: '🟢 Свободен, ищет заказ',
+  moving: '🟢 В пути',
+  eating: '🟢 Ест (за счёт компании)',
+  resting: '🟢 Отдыхает (за счёт компании)',
+  training: '🎓 На курсах повышения категории',
+};
+
+function jobFitsEmployeeVehicle(job, emp) {
+  const spec = VEHICLE_BY_ID[emp.vehicleType];
+  if (!spec) return false;
+  if (job.storage !== 'normal') return false;
+  if (job.weightKg > spec.kg || job.volumeL > spec.l) return false;
+  if (spec.cat === 'foot') {
+    return pointSpace(job.fromId) === pointSpace(job.toId) && pointSpace(job.fromId) === pointSpace(emp.positionId);
+  }
+  return true;
+}
+
+function findJobForEmployee(emp) {
+  const candidates = state.availableJobs.filter(j => jobFitsEmployeeVehicle(j, emp));
+  if (candidates.length === 0) return null;
+  if (emp.jobPref === 'expensive') return candidates.reduce((a, b) => (b.payout > a.payout ? b : a));
+  if (emp.jobPref === 'fastest') return candidates.reduce((a, b) => (b.distanceKm < a.distanceKm ? b : a));
+  let best = null, bestDist = Infinity;
+  candidates.forEach(j => {
+    const d = pathDistanceKm(shortestPath(emp.positionId, j.fromId));
+    if (d < bestDist) { bestDist = d; best = j; }
+  });
+  return best;
+}
+
+function runEmployeeTick(emp, dt) {
+  if (emp.status === 'training') {
+    emp.trainingRemaining = Math.max(0, emp.trainingRemaining - dt);
+    if (emp.trainingRemaining <= 0) {
+      const oldLicense = emp.license;
+      emp.license = emp.trainingTarget;
+      emp.trainingTarget = null;
+      emp.status = 'idle';
+      log(`Сотрудник ${emp.name} завершил обучение: ${LICENSE_LABEL[oldLicense]} → ${LICENSE_LABEL[emp.license]}`);
+    }
+    return;
+  }
+  if (emp.status === 'afk') return; // off the clock — takes care of himself, not our problem
+
+  const spec = VEHICLE_BY_ID[emp.vehicleType];
+  if (!spec) { emp.status = 'afk'; emp.working = false; return; }
+
+  if (emp.status === 'eating') {
+    emp.taskElapsed += dt;
+    if (emp.taskElapsed >= emp.taskTotal) { emp.hunger = 10; emp.status = 'idle'; }
+    return;
+  }
+  if (emp.status === 'resting') {
+    emp.taskElapsed += dt;
+    if (emp.taskElapsed >= emp.taskTotal) { emp.sleepiness = 10; emp.status = 'idle'; }
+    return;
+  }
+
+  if (emp.status === 'moving' && emp.activity) {
+    const a = emp.activity;
+    const kmThisTick = spec.speed * (dt / 60);
+    a.traveledKm = clamp(a.traveledKm + kmThisTick, 0, a.totalKm);
+    emp.hunger = clamp(emp.hunger + HUNGER_RATE_MOVING * dt, 0, 100);
+    emp.sleepiness = clamp(emp.sleepiness + SLEEPINESS_RATE * dt, 0, 100);
+    if (a.traveledKm >= a.totalKm) {
+      emp.positionId = a.targetId;
+      if (a.phase === 'to_pickup') {
+        const path = shortestPath(a.job.fromId, a.job.toId);
+        emp.activity = { path, totalKm: pathDistanceKm(path), traveledKm: 0, targetId: a.job.toId, phase: 'to_dropoff', job: a.job };
+      } else {
+        const payout = a.job.payout;
+        const half = Math.round(payout / 2);
+        state.money += half;
+        emp.earnings = (emp.earnings || 0) + half;
+        log(`${emp.name} доставил «${a.job.itemName}» (${pointFullLabel(a.job.fromId)} → ${pointFullLabel(a.job.toId)}) — компании ${half} ₽, сотруднику ${payout - half} ₽`);
+        emp.activity = null;
+        emp.status = 'idle';
+      }
+    }
+    return;
+  }
+
+  // status === 'idle': not currently on a job — decide what to do next
+  emp.hunger = clamp(emp.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
+  emp.sleepiness = clamp(emp.sleepiness + SLEEPINESS_RATE * dt, 0, 100);
+  if (!emp.working) { emp.status = 'afk'; return; }
+
+  const hasGarage = hasGarageInCity(pointSpace(emp.positionId));
+  if (emp.hunger >= EMPLOYEE_EAT_THRESHOLD) {
+    if (!hasGarage) state.money -= EMPLOYEE_MEAL_COST_NO_GARAGE;
+    emp.status = 'eating'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_EAT_MINUTES;
+    return;
+  }
+  if (emp.sleepiness >= EMPLOYEE_SLEEP_THRESHOLD) {
+    if (!hasGarage) state.money -= EMPLOYEE_SLEEP_COST_NO_GARAGE;
+    emp.status = 'resting'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_SLEEP_MINUTES;
+    return;
+  }
+
+  const job = findJobForEmployee(emp);
+  if (job) {
+    const idx = state.availableJobs.findIndex(j => j.id === job.id);
+    if (idx !== -1) state.availableJobs.splice(idx, 1);
+    const path = shortestPath(emp.positionId, job.fromId);
+    emp.activity = { path, totalKm: pathDistanceKm(path), traveledKm: 0, targetId: job.fromId, phase: 'to_pickup', job };
+    emp.status = 'moving';
+    log(`${emp.name} взял заказ «${job.itemName}» (${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)})`, { silent: true });
+  }
 }
 
 function dayIndexFromGameTime(gameTime) { return Math.floor((gameTime + DAY_START_OFFSET) / 1440); }
@@ -1231,6 +1448,22 @@ function migrateEconomyFields() {
   if (!state.company.garages) state.company.garages = {};
   if (!state.company.employees) state.company.employees = [];
   if (typeof state.company.employeeIdSeq !== 'number') state.company.employeeIdSeq = 1;
+  // A save from before the autonomous work loop existed could have employees
+  // hired but missing every field that loop depends on — back-fill rather
+  // than let runEmployeeTick crash on a missing status/position.
+  state.company.employees.forEach(emp => {
+    if (typeof emp.working !== 'boolean') emp.working = false;
+    if (!emp.status) emp.status = 'afk';
+    if (typeof emp.positionId !== 'string') emp.positionId = `${COMPANY_HOME_CITY}:home`;
+    if (typeof emp.hunger !== 'number') emp.hunger = 30;
+    if (typeof emp.sleepiness !== 'number') emp.sleepiness = 20;
+    if (emp.activity === undefined) emp.activity = null;
+    if (typeof emp.earnings !== 'number') emp.earnings = 0;
+    if (typeof emp.taskElapsed !== 'number') emp.taskElapsed = 0;
+    if (typeof emp.taskTotal !== 'number') emp.taskTotal = 0;
+    if (typeof emp.trainingRemaining !== 'number') emp.trainingRemaining = 0;
+    if (emp.trainingTarget === undefined) emp.trainingTarget = null;
+  });
   if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
   if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
   if (typeof state.player.warnedSleepy !== 'boolean') state.player.warnedSleepy = false;
@@ -2051,6 +2284,7 @@ function simulateTick(dt, summary) {
   if (state.gameOver) return;
   const p = state.player;
   checkJobDeadlines();
+  (state.company.employees || []).forEach(emp => runEmployeeTick(emp, dt));
 
   if (state.money < 0 && !p.warnedDebt) {
     p.warnedDebt = true;
@@ -2723,15 +2957,17 @@ function clampCameraToWorld(w, h) {
   camera.y = halfWorldH * 2 >= 100 ? 50 : clamp(camera.y, halfWorldH, 100 - halfWorldH);
 }
 
-function livePlayerWorldPos() {
-  const p = state.player;
-  if (p.status === 'moving' && p.activity) {
-    const pos = positionAlongPath(p.activity.path, p.activity.traveledKm, p.activity.totalKm);
-    return { world: localToWorld(pos.x, pos.y, pos.space), space: pos.space, angle: headingAngle(p.activity.path, p.activity.traveledKm, p.activity.totalKm) };
+// Generalized over any {status, activity, positionId} mover — the player, or
+// (per Stage 4) a working employee out on their own delivery loop.
+function liveWorldPosFor(mover) {
+  if (mover.status === 'moving' && mover.activity) {
+    const pos = positionAlongPath(mover.activity.path, mover.activity.traveledKm, mover.activity.totalKm);
+    return { world: localToWorld(pos.x, pos.y, pos.space), space: pos.space, angle: headingAngle(mover.activity.path, mover.activity.traveledKm, mover.activity.totalKm) };
   }
-  const space = pointSpace(p.positionId);
-  return { world: pointToWorld(p.positionId), space, angle: 0 };
+  const space = pointSpace(mover.positionId);
+  return { world: pointToWorld(mover.positionId), space, angle: 0 };
 }
+function livePlayerWorldPos() { return liveWorldPosFor(state.player); }
 
 // Fit-to-view zoom levels computed from the canvas's actual (possibly
 // non-square, e.g. the narrow-viewport 4:3 fallback) aspect ratio, so a whole
@@ -2938,7 +3174,7 @@ function drawWorld() {
 
   drawRouteHighlight(toPxWorld);
 
-  // Movers: the player today; the same drawing path will carry hired workers later.
+  // Movers: the player, plus any employee currently out working (not parked AFK).
   const live = livePlayerWorldPos();
   const [mx, my] = toPxWorld(live.world.x, live.world.y);
   const moverDetailed = live.space === 'country' ? detailed : detailed;
@@ -2951,6 +3187,20 @@ function drawWorld() {
     ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#14181f'; ctx.lineWidth = 1.5; ctx.stroke();
   }
+
+  (state.company.employees || []).forEach(emp => {
+    if (emp.status === 'afk' || emp.status === 'training') return;
+    const eLive = liveWorldPosFor(emp);
+    const [ex, ey] = toPxWorld(eLive.world.x, eLive.world.y);
+    if (ex < -20 || ex > w + 20 || ey < -20 || ey > h + 20) return;
+    lastClickables[`emp:${emp.id}`] = { x: ex, y: ey, r: 11, kind: 'employee', employeeId: emp.id };
+    ctx.fillStyle = '#4a9dd1';
+    ctx.beginPath(); ctx.arc(ex, ey, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#14181f'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.font = '9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🧑', ex, ey);
+    ctx.textAlign = 'left';
+  });
 
   const alpha = nightAlpha();
   if (alpha > 0.01) {
@@ -2970,10 +3220,20 @@ function handleTap(screenX, screenY) {
   for (const id in lastClickables) {
     const c = lastClickables[id];
     const d = Math.hypot(c.x - screenX, c.y - screenY);
-    if (d < c.r && d < bestDist) { bestDist = d; bestId = id; bestKind = c.kind; }
+    // <= (not <) so an employee marker standing exactly on a point (e.g.
+    // parked at "Дом") wins an exact-distance tie — movers are drawn on top
+    // and are added to lastClickables after points, so they should win taps.
+    if (d < c.r && d <= bestDist) { bestDist = d; bestId = id; bestKind = c.kind; }
   }
   if (!bestId) { uiSelectedPointId = null; lastPointPanelSignature = null; renderPointPanel(); return; }
   if (bestKind === 'city') { zoomToCity(bestId); return; }
+  if (bestKind === 'employee') {
+    const employeeId = lastClickables[bestId].employeeId;
+    companyView = { mode: 'employeeDetail', employeeId };
+    el('company-modal').classList.remove('hidden');
+    renderCompanyContent();
+    return;
+  }
   uiSelectedPointId = bestId;
   lastPointPanelSignature = null;
   renderPointPanel();
@@ -3776,7 +4036,7 @@ function renderEmployeesList(box) {
     icon.textContent = '🧑';
     const info = document.createElement('div');
     info.className = 'garage-info';
-    info.innerHTML = `<b>${emp.name}</b><div class="garage-sub">${LICENSE_LABEL[emp.license]}</div><div class="garage-sub">Транспорт: ${vehSpec ? vehSpec.name : '—'}</div>`;
+    info.innerHTML = `<b>${emp.name}</b><div class="garage-sub">${EMPLOYEE_STATUS_LABEL[emp.status] || emp.status}</div><div class="garage-sub">${LICENSE_LABEL[emp.license]}</div><div class="garage-sub">Транспорт: ${vehSpec ? vehSpec.name : '—'}</div>`;
     li.append(icon, info);
     li.onclick = () => { companyView = { mode: 'employeeDetail', employeeId: emp.id }; renderCompanyContent(); };
     list.appendChild(li);
@@ -3846,16 +4106,107 @@ function renderEmployeeDetail(box, employeeId) {
 
   if (!emp) return;
   const vehSpec = VEHICLE_BY_ID[emp.vehicleType];
+  const free = employeeIsFree(emp);
   const heading = document.createElement('h3');
   heading.textContent = emp.name;
   box.appendChild(heading);
 
   const info = document.createElement('div');
   info.innerHTML = `
+    <div class="job-sub">${EMPLOYEE_STATUS_LABEL[emp.status] || emp.status}${emp.status === 'training' ? ` — осталось ${formatMinutesDuration(emp.trainingRemaining)}` : ''}</div>
     <div class="job-sub">${LICENSE_LABEL[emp.license]}</div>
-    <div class="job-sub">Транспорт: ${vehSpec ? vehSpec.name : '—'}</div>
+    <div class="job-sub">Транспорт: ${vehSpec ? vehSpec.name : '— нет транспорта'}</div>
+    <div class="job-sub">Сытость: ${Math.round(emp.hunger)}% · Сон: ${Math.round(emp.sleepiness)}%</div>
+    <div class="job-sub">Где сейчас: ${pointFullLabel(emp.positionId)}</div>
+    <div class="job-sub">Заработал сотруднику: ${Math.round(emp.earnings || 0).toLocaleString('ru-RU')} ₽</div>
   `;
   box.appendChild(info);
+
+  if (emp.status === 'training') {
+    const trainHint = document.createElement('p');
+    trainHint.className = 'hint';
+    trainHint.textContent = `На курсах повышения категории — недоступен для других действий, пока не вернётся.`;
+    box.appendChild(trainHint);
+    return;
+  }
+
+  const workBtn = document.createElement('button');
+  workBtn.textContent = emp.working ? '🟢 Работает — нажми, чтобы отправить в АФК' : '🔴 АФК — нажми, чтобы вывести на работу';
+  workBtn.disabled = !emp.working && !emp.vehicleType;
+  workBtn.onclick = () => { toggleEmployeeWorking(emp.id); renderCompanyContent(); };
+  box.appendChild(workBtn);
+
+  const vehHeading = document.createElement('h3');
+  vehHeading.textContent = 'Транспорт';
+  box.appendChild(vehHeading);
+  if (emp.vehicleType) {
+    const takeBtn = document.createElement('button');
+    takeBtn.textContent = '🚫 Забрать транспорт (уйдёт в АФК)';
+    takeBtn.disabled = !free;
+    takeBtn.onclick = () => { takeEmployeeVehicle(emp.id); renderCompanyContent(); renderAll(); };
+    box.appendChild(takeBtn);
+  }
+  const eligible = eligibleVehiclesFor(emp.license).filter(v => v.type !== emp.vehicleType);
+  if (eligible.length > 0) {
+    const swapSelect = document.createElement('select');
+    swapSelect.className = 'hire-select';
+    eligible.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.type;
+      opt.textContent = VEHICLE_BY_ID[v.type].name;
+      swapSelect.appendChild(opt);
+    });
+    box.appendChild(swapSelect);
+    const swapBtn = document.createElement('button');
+    swapBtn.textContent = emp.vehicleType ? 'Сменить транспорт' : 'Выдать транспорт';
+    swapBtn.disabled = !free;
+    swapBtn.onclick = () => { assignEmployeeVehicle(emp.id, swapSelect.value); renderCompanyContent(); renderAll(); };
+    box.appendChild(swapBtn);
+  } else {
+    const noVeh = document.createElement('p');
+    noVeh.className = 'hint';
+    noVeh.textContent = 'Нет другого свободного подходящего транспорта в твоём гараже.';
+    box.appendChild(noVeh);
+  }
+
+  const ownedGarageCities = COUNTRY_CITIES.filter(c => hasGarageInCity(c.id));
+  if (ownedGarageCities.length > 0) {
+    const garageHeading = document.createElement('h3');
+    garageHeading.textContent = 'Отправить в гараж';
+    box.appendChild(garageHeading);
+    const gSelect = document.createElement('select');
+    gSelect.className = 'hire-select';
+    ownedGarageCities.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.name;
+      gSelect.appendChild(opt);
+    });
+    box.appendChild(gSelect);
+    const gBtn = document.createElement('button');
+    gBtn.textContent = '🅿️ Отправить в гараж (уйдёт в АФК)';
+    gBtn.disabled = !free;
+    gBtn.onclick = () => { sendEmployeeToGarage(emp.id, gSelect.value); renderCompanyContent(); renderAll(); };
+    box.appendChild(gBtn);
+  }
+
+  const licenseIdx = LICENSE_TIERS_ORDER.indexOf(emp.license);
+  if (licenseIdx < LICENSE_TIERS_ORDER.length - 1) {
+    const targetLicense = LICENSE_TIERS_ORDER[licenseIdx + 1];
+    const cost = LICENSE_UPGRADE_COST[targetLicense] + TRAINING_WAGE_PER_DAY * TRAINING_DAYS;
+    const trainHeading = document.createElement('h3');
+    trainHeading.textContent = 'Повышение категории';
+    box.appendChild(trainHeading);
+    const trainHint = document.createElement('p');
+    trainHint.className = 'hint';
+    trainHint.textContent = `До «${LICENSE_LABEL[targetLicense]}», ~${TRAINING_DAYS} дней, ${cost.toLocaleString('ru-RU')} ₽ (курс + минимальная зарплата на всё время обучения). На это время сотрудник не работает.`;
+    box.appendChild(trainHint);
+    const trainBtn = document.createElement('button');
+    trainBtn.textContent = `🎓 Отправить на курсы — ${cost.toLocaleString('ru-RU')} ₽`;
+    trainBtn.disabled = !free || state.money < cost;
+    trainBtn.onclick = () => { startEmployeeTraining(emp.id); renderCompanyContent(); renderAll(); };
+    box.appendChild(trainBtn);
+  }
 
   const prefHeading = document.createElement('h3');
   prefHeading.textContent = 'Какие заказы брать';
@@ -3870,6 +4221,7 @@ function renderEmployeeDetail(box, employeeId) {
   const fireBtn = document.createElement('button');
   fireBtn.className = 'danger-action';
   fireBtn.textContent = 'Уволить';
+  fireBtn.disabled = !free;
   fireBtn.onclick = () => { fireEmployee(emp.id); companyView = { mode: 'employees' }; renderCompanyContent(); renderAll(); };
   box.appendChild(fireBtn);
 }
