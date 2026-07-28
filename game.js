@@ -4810,5 +4810,16 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('resize', () => { if (!gameScreen.classList.contains('hidden')) resizeCanvas(); });
+// The map is a flex child sized by whatever's left after the vitals bar and
+// bottom tab bar/cargo panel take their own height — that can change for
+// reasons a plain window "resize" event never fires for (mobile browser
+// chrome show/hide changing dvh, cargo panel appearing/disappearing, fonts
+// finishing layout late). Without this the canvas's pixel buffer goes stale
+// relative to its actual box and gets stretched, which looks like the map
+// is squished with a visible seam. A ResizeObserver on the box itself catches
+// all of that directly.
+if (window.ResizeObserver) {
+  new ResizeObserver(() => { if (!gameScreen.classList.contains('hidden')) resizeCanvas(); }).observe(el('map-stage'));
+}
 
 showMenuScreen();
