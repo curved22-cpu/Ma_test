@@ -251,6 +251,14 @@ html, body { height: 100%; margin: 0; }
 .garage-list .garage-sub { color: #9aa4b2; font-size: 0.78rem; }
 .garage-list .garage-buy-btn { width: auto; margin: 0; padding: 6px 10px; font-size: 0.78rem; flex-shrink: 0; }
 
+.company-nav-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.company-nav-row button { width: auto; flex: 1; margin-top: 0; }
+.candidate-card {
+  background: #232a35; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+  border: 1px solid #3a4250; text-align: left;
+}
+.hire-select { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #3a4250; background: #1c222c; color: #eee; margin: 6px 0; }
+
 .garage-detail { text-align: left; }
 .garage-detail-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .garage-detail-header .garage-icon { width: 54px; height: 54px; font-size: 1.8rem; }

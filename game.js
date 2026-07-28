@@ -1058,7 +1058,7 @@ function newGameState() {
     stats: { jobsCompleted: 0, totalEarned: 0 },
     lastProcessedDay: 0,
     dailyExpense: { living: 0, vehicleUpkeep: 0, total: 0, day: 1 },
-    company: { registered: false, garages: {} }, // once registered: intercity jobs/travel + garages unlock (employees come later)
+    company: { registered: false, garages: {}, employees: [], employeeIdSeq: 1 }, // once registered: intercity jobs/travel + garages + hiring unlock
   };
 }
 
@@ -1109,6 +1109,84 @@ function garageRepair() {
   log('Бесплатный ремонт в гараже компании');
 }
 
+// ---------- staffing agency & employees ----------
+// Stage 3: hiring infrastructure only — candidates, resumes/licenses, and
+// handing them a vehicle from the fleet. The employees don't drive around or
+// take jobs on their own yet (that's the next stage); this just builds the
+// roster and the vehicle-assignment bookkeeping it depends on.
+const PERSON_FIRST_NAMES = ['Александр', 'Дмитрий', 'Сергей', 'Андрей', 'Алексей', 'Иван', 'Михаил', 'Николай', 'Владимир', 'Артём', 'Максим', 'Егор', 'Кирилл', 'Роман', 'Виктор', 'Павел', 'Игорь', 'Юрий', 'Денис', 'Олег'];
+const PERSON_LAST_NAMES = ['Иванов', 'Петров', 'Сидоров', 'Смирнов', 'Кузнецов', 'Попов', 'Соколов', 'Козлов', 'Новиков', 'Морозов', 'Волков', 'Алексеев', 'Захаров', 'Павлов', 'Семёнов', 'Голубев', 'Виноградов', 'Богданов'];
+
+// Simplified real-world-ish license tiers — each one cumulatively unlocks the
+// vehicle categories below it, so a "категория C" hire can also legally drive
+// anything a "без прав" courier can.
+const LICENSE_TIERS_ORDER = ['none', 'M', 'A', 'B', 'C'];
+const LICENSE_UNLOCKS_CATS = {
+  none: ['foot', 'scooter', 'bike'],
+  M: ['moped'],
+  A: ['motorcycle'],
+  B: ['car'],
+  C: ['van', 'truck'],
+};
+const LICENSE_LABEL = {
+  none: 'без категории (пешком/самокат/велосипед)',
+  M: 'категория M (+ мопед)',
+  A: 'категория A (+ мотоцикл)',
+  B: 'категория B (+ легковая)',
+  C: 'категория C (+ фургон/грузовик)',
+};
+function licenseAllowsVehicleCat(license, cat) {
+  const idx = LICENSE_TIERS_ORDER.indexOf(license);
+  for (let i = 0; i <= idx; i++) { if (LICENSE_UNLOCKS_CATS[LICENSE_TIERS_ORDER[i]].includes(cat)) return true; }
+  return false;
+}
+const HIRE_FEE_BY_LICENSE = { none: 3000, M: 6000, A: 9000, B: 15000, C: 30000 };
+const JOB_PREF_OPTIONS = [
+  { id: 'expensive', label: 'Самые дорогие заказы' },
+  { id: 'fastest', label: 'Самые срочные заказы' },
+  { id: 'closest', label: 'Заказы ближе к нему' },
+];
+
+let candidatePool = [];
+function generateCandidate() {
+  const roll = Math.random();
+  const license = roll > 0.85 ? 'C' : roll > 0.7 ? 'B' : roll > 0.5 ? 'A' : roll > 0.3 ? 'M' : 'none';
+  return { name: `${pick(PERSON_FIRST_NAMES)} ${pick(PERSON_LAST_NAMES)}`, license, fee: HIRE_FEE_BY_LICENSE[license] };
+}
+function refreshCandidatePool() {
+  candidatePool = Array.from({ length: 4 }, generateCandidate);
+}
+function eligibleVehiclesFor(license) {
+  return state.player.vehicles.filter(v => v !== state.player.vehicle && !v.assignedTo && licenseAllowsVehicleCat(license, VEHICLE_BY_ID[v.type].cat));
+}
+function hireEmployee(candidateIdx, vehicleType) {
+  if (!state.company.registered) { toast('Нужна своя компания, чтобы нанимать сотрудников'); return; }
+  const cand = candidatePool[candidateIdx];
+  if (!cand) return;
+  if (state.money < cand.fee) { toast('Не хватает денег на найм'); return; }
+  const veh = state.player.vehicles.find(v => v.type === vehicleType);
+  if (!veh || veh === state.player.vehicle || veh.assignedTo) { toast('Нужен свободный транспорт для этого сотрудника'); return; }
+  const spec = VEHICLE_BY_ID[vehicleType];
+  if (!licenseAllowsVehicleCat(cand.license, spec.cat)) { toast('У этого сотрудника нет прав на такой транспорт'); return; }
+  state.money -= cand.fee;
+  veh.assignedTo = state.company.employeeIdSeq;
+  state.company.employees.push({ id: state.company.employeeIdSeq++, name: cand.name, license: cand.license, vehicleType, jobPref: 'expensive' });
+  candidatePool.splice(candidateIdx, 1);
+  log(`Нанял сотрудника: ${cand.name} (${LICENSE_LABEL[cand.license]}) — выдал «${spec.name}» (${cand.fee.toLocaleString('ru-RU')} ₽)`);
+}
+function fireEmployee(employeeId) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  const veh = state.player.vehicles.find(v => v.type === emp.vehicleType);
+  if (veh) veh.assignedTo = null;
+  state.company.employees = state.company.employees.filter(e => e.id !== employeeId);
+  log(`Уволил сотрудника: ${emp.name}`);
+}
+function setEmployeeJobPref(employeeId, pref) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  if (emp) emp.jobPref = pref;
+}
+
 function dayIndexFromGameTime(gameTime) { return Math.floor((gameTime + DAY_START_OFFSET) / 1440); }
 
 function livingCostRange() {
@@ -1149,8 +1227,10 @@ function migrateEconomyFields() {
   // A save from before the company system existed already had the run of the
   // whole country — grandfather it in as "registered" rather than retroactively
   // locking existing progress down to one city.
-  if (!state.company) state.company = { registered: true, garages: {} };
+  if (!state.company) state.company = { registered: true, garages: {}, employees: [], employeeIdSeq: 1 };
   if (!state.company.garages) state.company.garages = {};
+  if (!state.company.employees) state.company.employees = [];
+  if (typeof state.company.employeeIdSeq !== 'number') state.company.employeeIdSeq = 1;
   if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
   if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
   if (typeof state.player.warnedSleepy !== 'boolean') state.player.warnedSleepy = false;
@@ -1891,6 +1971,7 @@ function switchVehicle(vehicleType) {
   if (p.status !== 'idle') { toast('Пересесть можно, только когда стоишь на месте'); return; }
   const target = p.vehicles.find(veh => veh.type === vehicleType);
   if (!target) return;
+  if (target.assignedTo) { toast('Эта техника выдана сотруднику'); return; }
   const spec = VEHICLE_BY_ID[vehicleType];
   if (cargoWeightKg() > spec.kg || cargoVolumeL() > spec.l) { toast('Текущий груз не влезет в эту технику'); return; }
   p.vehicle = target;
@@ -1915,6 +1996,7 @@ function sellVehicle(vehicleType) {
   if (!spec || !veh || spec.price === 0) { toast('Эту технику продать нельзя'); return; }
   if (p.status !== 'idle') { toast('Продавать можно, только когда стоишь на месте'); return; }
   if (p.vehicle.type === vehicleType) { toast('Сначала пересядь на другую технику'); return; }
+  if (veh.assignedTo) { toast('Сначала уволь сотрудника, использующего эту технику'); return; }
   const value = vehicleResaleValue(veh);
   p.vehicles = p.vehicles.filter(v => v.type !== vehicleType);
   state.money += value;
@@ -3581,71 +3663,215 @@ function openWorkshop() {
 
 // ---------- company ----------
 
+let companyView = { mode: 'main' };
+
 function renderCompanyContent() {
   const box = el('company-content');
   box.innerHTML = '';
-  if (!state.company.registered) {
-    const p = document.createElement('p');
-    p.className = 'hint';
-    p.textContent = 'Пока ты просто курьер и работаешь только в Ривном. Зарегистрируй свою компанию-грузоперевозчика, чтобы возить заказы между городами и нанимать сотрудников.';
-    box.appendChild(p);
-    const reqList = document.createElement('div');
-    const hasCar = hasCarForCompany();
-    const hasMoney = state.money >= COMPANY_REGISTRATION_COST;
-    reqList.innerHTML = `
-      <div class="job-sub">${hasMoney ? '✅' : '❌'} ${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽ на регистрацию</div>
-      <div class="job-sub">${hasCar ? '✅' : '❌'} Хотя бы одна легковая машина</div>
-    `;
-    box.appendChild(reqList);
-    const btn = document.createElement('button');
-    btn.textContent = `Зарегистрировать компанию — ${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽`;
-    btn.disabled = !canRegisterCompany();
-    btn.onclick = () => { registerCompany(); renderCompanyContent(); renderAll(); };
-    box.appendChild(btn);
-  } else {
-    const p = document.createElement('p');
-    p.textContent = '✅ Компания зарегистрирована — межгородские перевозки открыты.';
-    box.appendChild(p);
+  if (!state.company.registered) { renderCompanyRegistration(box); return; }
+  if (companyView.mode === 'employees') { renderEmployeesList(box); return; }
+  if (companyView.mode === 'hire') { renderHireScreen(box); return; }
+  if (companyView.mode === 'employeeDetail') { renderEmployeeDetail(box, companyView.employeeId); return; }
+  renderCompanyMain(box);
+}
 
-    const garageHeading = document.createElement('h3');
-    garageHeading.textContent = 'Гаражи';
-    box.appendChild(garageHeading);
-    const garageHint = document.createElement('p');
-    garageHint.className = 'hint';
-    garageHint.textContent = 'В каждом городе есть один участок под гараж компании — бесплатные еда, сон, ремонт и зарядка электротранспорта для тебя (и позже для сотрудников).';
-    box.appendChild(garageHint);
+function renderCompanyRegistration(box) {
+  const p = document.createElement('p');
+  p.className = 'hint';
+  p.textContent = 'Пока ты просто курьер и работаешь только в Ривном. Зарегистрируй свою компанию-грузоперевозчика, чтобы возить заказы между городами и нанимать сотрудников.';
+  box.appendChild(p);
+  const reqList = document.createElement('div');
+  const hasCar = hasCarForCompany();
+  const hasMoney = state.money >= COMPANY_REGISTRATION_COST;
+  reqList.innerHTML = `
+    <div class="job-sub">${hasMoney ? '✅' : '❌'} ${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽ на регистрацию</div>
+    <div class="job-sub">${hasCar ? '✅' : '❌'} Хотя бы одна легковая машина</div>
+  `;
+  box.appendChild(reqList);
+  const btn = document.createElement('button');
+  btn.textContent = `Зарегистрировать компанию — ${COMPANY_REGISTRATION_COST.toLocaleString('ru-RU')} ₽`;
+  btn.disabled = !canRegisterCompany();
+  btn.onclick = () => { registerCompany(); renderCompanyContent(); renderAll(); };
+  box.appendChild(btn);
+}
 
-    const garageList = document.createElement('ul');
-    garageList.className = 'garage-list';
-    COUNTRY_CITIES.forEach(city => {
-      const owned = hasGarageInCity(city.id);
-      const cost = garageCostForCity(city.id);
-      const li = document.createElement('li');
-      li.className = owned ? 'active-vehicle' : '';
-      const icon = document.createElement('div');
-      icon.className = 'garage-icon';
-      icon.textContent = '🅿️';
-      const info = document.createElement('div');
-      info.className = 'garage-info';
-      info.innerHTML = `${owned ? '<span class="garage-badge">Куплен</span><br>' : ''}<b>${city.name}</b><div class="garage-sub">${TIER_LABEL[city.tier] || city.tier}</div>`;
-      li.append(icon, info);
-      if (!owned) {
-        const buyBtn = document.createElement('button');
-        buyBtn.className = 'garage-buy-btn';
-        buyBtn.textContent = `${cost.toLocaleString('ru-RU')} ₽`;
-        buyBtn.disabled = state.money < cost;
-        buyBtn.onclick = () => { buyGarage(city.id); renderCompanyContent(); renderAll(); };
-        li.appendChild(buyBtn);
-      }
-      garageList.appendChild(li);
-    });
-    box.appendChild(garageList);
+function renderCompanyMain(box) {
+  const p = document.createElement('p');
+  p.textContent = '✅ Компания зарегистрирована — межгородские перевозки открыты.';
+  box.appendChild(p);
 
+  const navRow = document.createElement('div');
+  navRow.className = 'company-nav-row';
+  const staffBtn = document.createElement('button');
+  staffBtn.textContent = `👥 Сотрудники (${state.company.employees.length})`;
+  staffBtn.onclick = () => { companyView = { mode: 'employees' }; renderCompanyContent(); };
+  navRow.appendChild(staffBtn);
+  box.appendChild(navRow);
+
+  const garageHeading = document.createElement('h3');
+  garageHeading.textContent = 'Гаражи';
+  box.appendChild(garageHeading);
+  const garageHint = document.createElement('p');
+  garageHint.className = 'hint';
+  garageHint.textContent = 'В каждом городе есть один участок под гараж компании — бесплатные еда, сон, ремонт и зарядка электротранспорта для тебя и сотрудников.';
+  box.appendChild(garageHint);
+
+  const garageList = document.createElement('ul');
+  garageList.className = 'garage-list';
+  COUNTRY_CITIES.forEach(city => {
+    const owned = hasGarageInCity(city.id);
+    const cost = garageCostForCity(city.id);
+    const li = document.createElement('li');
+    li.className = owned ? 'active-vehicle' : '';
+    const icon = document.createElement('div');
+    icon.className = 'garage-icon';
+    icon.textContent = '🅿️';
+    const info = document.createElement('div');
+    info.className = 'garage-info';
+    info.innerHTML = `${owned ? '<span class="garage-badge">Куплен</span><br>' : ''}<b>${city.name}</b><div class="garage-sub">${TIER_LABEL[city.tier] || city.tier}</div>`;
+    li.append(icon, info);
+    if (!owned) {
+      const buyBtn = document.createElement('button');
+      buyBtn.className = 'garage-buy-btn';
+      buyBtn.textContent = `${cost.toLocaleString('ru-RU')} ₽`;
+      buyBtn.disabled = state.money < cost;
+      buyBtn.onclick = () => { buyGarage(city.id); renderCompanyContent(); renderAll(); };
+      li.appendChild(buyBtn);
+    }
+    garageList.appendChild(li);
+  });
+  box.appendChild(garageList);
+}
+
+function renderEmployeesList(box) {
+  const backBtn = document.createElement('button');
+  backBtn.textContent = '← Назад';
+  backBtn.onclick = () => { companyView = { mode: 'main' }; renderCompanyContent(); };
+  box.appendChild(backBtn);
+
+  const heading = document.createElement('h3');
+  heading.textContent = 'Сотрудники';
+  box.appendChild(heading);
+
+  const hireBtn = document.createElement('button');
+  hireBtn.textContent = '➕ Нанять через кадровое агентство';
+  hireBtn.onclick = () => { refreshCandidatePool(); companyView = { mode: 'hire' }; renderCompanyContent(); };
+  box.appendChild(hireBtn);
+
+  if (state.company.employees.length === 0) {
     const hint = document.createElement('p');
     hint.className = 'hint';
-    hint.textContent = 'Найм сотрудников появится здесь в следующих обновлениях.';
+    hint.textContent = 'Пока никто не нанят.';
     box.appendChild(hint);
+    return;
   }
+
+  const list = document.createElement('ul');
+  list.className = 'garage-list';
+  state.company.employees.forEach(emp => {
+    const vehSpec = VEHICLE_BY_ID[emp.vehicleType];
+    const li = document.createElement('li');
+    const icon = document.createElement('div');
+    icon.className = 'garage-icon';
+    icon.textContent = '🧑';
+    const info = document.createElement('div');
+    info.className = 'garage-info';
+    info.innerHTML = `<b>${emp.name}</b><div class="garage-sub">${LICENSE_LABEL[emp.license]}</div><div class="garage-sub">Транспорт: ${vehSpec ? vehSpec.name : '—'}</div>`;
+    li.append(icon, info);
+    li.onclick = () => { companyView = { mode: 'employeeDetail', employeeId: emp.id }; renderCompanyContent(); };
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+}
+
+function renderHireScreen(box) {
+  const backBtn = document.createElement('button');
+  backBtn.textContent = '← Назад';
+  backBtn.onclick = () => { companyView = { mode: 'employees' }; renderCompanyContent(); };
+  box.appendChild(backBtn);
+
+  const heading = document.createElement('h3');
+  heading.textContent = 'Кадровое агентство';
+  box.appendChild(heading);
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.textContent = '🔄 Обновить список';
+  refreshBtn.onclick = () => { refreshCandidatePool(); renderCompanyContent(); };
+  box.appendChild(refreshBtn);
+
+  if (candidatePool.length === 0) {
+    const hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = 'Сейчас никто не ищет работу — обнови список.';
+    box.appendChild(hint);
+    return;
+  }
+
+  candidatePool.forEach((cand, idx) => {
+    const card = document.createElement('div');
+    card.className = 'candidate-card';
+    card.innerHTML = `<b>${cand.name}</b><div class="job-sub">${LICENSE_LABEL[cand.license]}</div><div class="job-sub">Найм: ${cand.fee.toLocaleString('ru-RU')} ₽</div>`;
+    const eligible = eligibleVehiclesFor(cand.license);
+    if (eligible.length === 0) {
+      const noVeh = document.createElement('div');
+      noVeh.className = 'job-sub';
+      noVeh.textContent = 'Нет свободного подходящего транспорта в твоём гараже';
+      card.appendChild(noVeh);
+    } else {
+      const select = document.createElement('select');
+      select.className = 'hire-select';
+      eligible.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.type;
+        opt.textContent = VEHICLE_BY_ID[v.type].name;
+        select.appendChild(opt);
+      });
+      card.appendChild(select);
+      const hireBtn = document.createElement('button');
+      hireBtn.textContent = `Нанять — ${cand.fee.toLocaleString('ru-RU')} ₽`;
+      hireBtn.disabled = state.money < cand.fee;
+      hireBtn.onclick = () => { hireEmployee(idx, select.value); renderCompanyContent(); renderAll(); };
+      card.appendChild(hireBtn);
+    }
+    box.appendChild(card);
+  });
+}
+
+function renderEmployeeDetail(box, employeeId) {
+  const emp = state.company.employees.find(e => e.id === employeeId);
+  const backBtn = document.createElement('button');
+  backBtn.textContent = '← Назад';
+  backBtn.onclick = () => { companyView = { mode: 'employees' }; renderCompanyContent(); };
+  box.appendChild(backBtn);
+
+  if (!emp) return;
+  const vehSpec = VEHICLE_BY_ID[emp.vehicleType];
+  const heading = document.createElement('h3');
+  heading.textContent = emp.name;
+  box.appendChild(heading);
+
+  const info = document.createElement('div');
+  info.innerHTML = `
+    <div class="job-sub">${LICENSE_LABEL[emp.license]}</div>
+    <div class="job-sub">Транспорт: ${vehSpec ? vehSpec.name : '—'}</div>
+  `;
+  box.appendChild(info);
+
+  const prefHeading = document.createElement('h3');
+  prefHeading.textContent = 'Какие заказы брать';
+  box.appendChild(prefHeading);
+  JOB_PREF_OPTIONS.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.textContent = (emp.jobPref === opt.id ? '✓ ' : '') + opt.label;
+    btn.onclick = () => { setEmployeeJobPref(emp.id, opt.id); renderCompanyContent(); };
+    box.appendChild(btn);
+  });
+
+  const fireBtn = document.createElement('button');
+  fireBtn.className = 'danger-action';
+  fireBtn.textContent = 'Уволить';
+  fireBtn.onclick = () => { fireEmployee(emp.id); companyView = { mode: 'employees' }; renderCompanyContent(); renderAll(); };
+  box.appendChild(fireBtn);
 }
 
 // ---------- garage (owned vehicles) ----------
