@@ -849,6 +849,14 @@ function pathDistanceKm(path) {
   for (let i = 0; i < path.length - 1; i++) total += waypointDist(path[i], path[i + 1]);
   return total;
 }
+// Cumulative km at each node of the path (cum[0] === 0, cum[last] === total
+// path length) — lets a traveler figure out exactly which node they've just
+// reached/passed given only how many km they've covered so far.
+function pathCumulativeKm(path) {
+  const cum = [0];
+  for (let i = 0; i < path.length - 1; i++) cum.push(cum[i] + waypointDist(path[i], path[i + 1]));
+  return cum;
+}
 
 // Returns {x,y,space} — space tells the renderer which canvas (which city, or
 // the country map) this live position belongs to.
@@ -1096,8 +1104,41 @@ function buyGarage(cityId) {
   const cost = garageCostForCity(cityId);
   if (state.money < cost) { toast('Не хватает денег на гараж'); return; }
   state.money -= cost;
-  state.company.garages[cityId] = true;
-  log(`Купил гараж компании в городе «${cityMeta(cityId).name}» (${cost.toLocaleString('ru-RU')} ₽)`);
+  state.company.garages[cityId] = { capacity: GARAGE_DEFAULT_CAPACITY };
+  log(`Купил гараж компании в городе «${cityMeta(cityId).name}» (${cost.toLocaleString('ru-RU')} ₽) — ${GARAGE_DEFAULT_CAPACITY} места для сотрудников`);
+}
+
+// A garage isn't just for the player's own eat/sleep/repair — every non-foot
+// employee needs a bunk somewhere, so garages also cap how many of them the
+// company can house at once (expandable per-city; see expandGarage below).
+const GARAGE_DEFAULT_CAPACITY = 2;
+const GARAGE_EXPAND_BASE_COST = { village: 5000, small: 10000, big: 20000, metro: 40000 };
+function garageCapacity(cityId) {
+  const g = state.company.garages[cityId];
+  return g ? g.capacity : 0;
+}
+function totalGarageCapacity() {
+  return Object.keys(state.company.garages).reduce((sum, cid) => sum + garageCapacity(cid), 0);
+}
+function garageSlotsUsed() {
+  return state.company.employees.filter(e => e.usesGarageSlot).length;
+}
+function garageSlotsAvailable() {
+  return totalGarageCapacity() - garageSlotsUsed();
+}
+function garageExpandCost(cityId) {
+  const g = state.company.garages[cityId];
+  const level = g ? g.capacity - GARAGE_DEFAULT_CAPACITY : 0;
+  const base = GARAGE_EXPAND_BASE_COST[SETTLEMENT_TIER[cityId] || 'village'];
+  return Math.round(base * (1 + level * 0.6));
+}
+function expandGarage(cityId) {
+  if (!hasGarageInCity(cityId)) { toast('В этом городе нет гаража компании'); return; }
+  const cost = garageExpandCost(cityId);
+  if (state.money < cost) { toast('Не хватает денег на расширение гаража'); return; }
+  state.money -= cost;
+  state.company.garages[cityId].capacity += 1;
+  log(`Расширил гараж компании в городе «${cityMeta(cityId).name}» — теперь ${state.company.garages[cityId].capacity} мест (${cost.toLocaleString('ru-RU')} ₽)`);
 }
 function garageRepair() {
   const p = state.player;
@@ -1168,13 +1209,18 @@ function hireEmployee(candidateIdx, vehicleType) {
   if (!veh || veh === state.player.vehicle || veh.assignedTo) { toast('Нужен свободный транспорт для этого сотрудника'); return; }
   const spec = VEHICLE_BY_ID[vehicleType];
   if (!licenseAllowsVehicleCat(cand.license, spec.cat)) { toast('У этого сотрудника нет прав на такой транспорт'); return; }
+  // Pedestrian hires are "locals" who look after themselves at their own place —
+  // everyone else needs a bunk in a company garage somewhere.
+  const usesGarageSlot = spec.cat !== 'foot';
+  if (usesGarageSlot && garageSlotsAvailable() <= 0) { toast('Нет свободных мест в гаражах — купи гараж или расширь существующий'); return; }
   state.money -= cand.fee;
   veh.assignedTo = state.company.employeeIdSeq;
   state.company.employees.push({
     id: state.company.employeeIdSeq++, name: cand.name, license: cand.license, vehicleType, jobPref: 'expensive',
     working: false, status: 'afk', positionId: state.player.positionId,
-    hunger: 30, sleepiness: 20, activity: null, earnings: 0,
+    hunger: 30, sleepiness: 20, activity: null, pendingActivity: null, earnings: 0,
     taskElapsed: 0, taskTotal: 0, trainingRemaining: 0, trainingTarget: null,
+    usesGarageSlot,
   });
   candidatePool.splice(candidateIdx, 1);
   log(`Нанял сотрудника: ${cand.name} (${LICENSE_LABEL[cand.license]}) — выдал «${spec.name}» (${cand.fee.toLocaleString('ru-RU')} ₽)`);
@@ -1209,7 +1255,8 @@ function toggleEmployeeWorking(employeeId) {
   } else {
     emp.working = false;
     // If he's out mid-delivery, let him finish it — the tick loop sends him
-    // AFK on his own once he's free again, same as the player logging off.
+    // heading for the nearest garage on his own once he's free again (or,
+    // for a pedestrian, straight home), same as the player logging off.
     if (emp.status === 'idle') emp.status = 'afk';
   }
 }
@@ -1225,6 +1272,7 @@ function takeEmployeeVehicle(employeeId) {
   emp.working = false;
   emp.status = 'afk';
   emp.activity = null;
+  emp.pendingActivity = null;
   log(`Забрал транспорт у сотрудника ${emp.name} — переведён в АФК`);
 }
 
@@ -1236,12 +1284,19 @@ function assignEmployeeVehicle(employeeId, vehicleType) {
   if (!veh || veh === state.player.vehicle || veh.assignedTo) { toast('Этот транспорт сейчас недоступен'); return; }
   const spec = VEHICLE_BY_ID[vehicleType];
   if (!licenseAllowsVehicleCat(emp.license, spec.cat)) { toast('У сотрудника нет прав на такой транспорт'); return; }
+  const needsGarageNow = spec.cat !== 'foot';
+  // Swapping a pedestrian onto real wheels newly claims a garage slot — swapping
+  // the other way (or between two non-foot vehicles) doesn't change the count.
+  if (needsGarageNow && !emp.usesGarageSlot && garageSlotsAvailable() <= 0) {
+    toast('Нет свободных мест в гаражах для транспорта — купи гараж или расширь существующий'); return;
+  }
   if (emp.vehicleType) {
     const oldVeh = state.player.vehicles.find(v => v.type === emp.vehicleType);
     if (oldVeh) oldVeh.assignedTo = null;
   }
   veh.assignedTo = emp.id;
   emp.vehicleType = vehicleType;
+  emp.usesGarageSlot = needsGarageNow;
   log(`Выдал сотруднику ${emp.name} транспорт: ${spec.name}`);
 }
 
@@ -1250,11 +1305,16 @@ function sendEmployeeToGarage(employeeId, cityId) {
   if (!emp) return;
   if (!hasGarageInCity(cityId)) { toast('В этом городе нет гаража компании'); return; }
   if (!employeeIsFree(emp)) { toast('Сначала дождись, пока сотрудник освободится'); return; }
-  emp.positionId = `${cityId}:garage`;
-  emp.activity = null;
+  const spec = VEHICLE_BY_ID[emp.vehicleType];
+  if (!spec) { toast('Сначала выдай сотруднику транспорт'); return; }
+  if (spec.cat === 'foot' && pointSpace(emp.positionId) !== cityId) { toast('Пешком до другого города не дойти'); return; }
   emp.working = false;
-  emp.status = 'afk';
-  log(`Отправил сотрудника ${emp.name} в гараж компании (${cityMeta(cityId).name})`);
+  const targetId = `${cityId}:garage`;
+  if (emp.positionId === targetId) { emp.status = 'afk'; emp.activity = null; log(`Сотрудник ${emp.name} уже в этом гараже — переведён в АФК`); return; }
+  const path = shortestPath(emp.positionId, targetId);
+  emp.activity = buildEmployeeActivity(path, targetId, 'to_garage', null);
+  emp.status = 'moving';
+  log(`Отправил сотрудника ${emp.name} в гараж компании (${cityMeta(cityId).name}) — едет туда своим ходом`);
 }
 
 const LICENSE_UPGRADE_COST = { M: 8000, A: 12000, B: 20000, C: 35000 };
@@ -1275,28 +1335,39 @@ function startEmployeeTraining(employeeId) {
   emp.trainingTarget = targetLicense;
   emp.trainingRemaining = TRAINING_DAYS * 1440;
   emp.activity = null;
+  emp.pendingActivity = null;
   log(`Отправил сотрудника ${emp.name} на курсы повышения категории до «${targetLicense}» (${cost.toLocaleString('ru-RU')} ₽, ~${TRAINING_DAYS} дней, минимальная зарплата всё время курса)`);
 }
 
 // ---------- employee autonomous work loop ----------
-// Deliberately simplified compared to the player's own simulation: employees
-// ignore fuel/condition/breakdowns entirely (their vehicle never runs dry or
-// wears out) and can only take plain "normal"-storage jobs (no equipment
-// inventory of their own yet). This keeps N employees cheap to simulate every
-// tick while still giving each one a real position, a real job cycle, and
-// real hunger/sleepiness that has to be tended to.
-const EMPLOYEE_EAT_THRESHOLD = 75;
-const EMPLOYEE_SLEEP_THRESHOLD = 75;
+// Employees drive the real road graph at their vehicle's speed and never
+// teleport: fuel drains as they go (shared with the same vehicle instance
+// the player owns), and while en route they proactively watch ahead and pull
+// off at the next suitable stop — a gas station/waystop for fuel (with a
+// safety margin, so they never actually run the tank dry), a cafe/gas/waystop
+// or a company garage for food, a company garage (or, for car/truck, the cab
+// itself, anywhere) for sleep, or — failing all of that — a paid roadside
+// place to crash, billed to the company. Pedestrians are the one exception:
+// they're modeled as locals who eat/sleep at their own place for free and
+// don't need any of this (also why they're exempt from the garage-slot
+// requirement to be hired at all). Going AFK doesn't strand them either —
+// they finish whatever they're carrying, then drive to the nearest owned
+// garage before actually parking. Deliberately still simplified vs. the
+// player: only "normal"-storage jobs (no equipment of their own yet), and no
+// condition wear/breakdowns/accidents.
+const EMPLOYEE_EAT_THRESHOLD = 70;
+const EMPLOYEE_SLEEP_THRESHOLD = 70;
 const EMPLOYEE_EAT_MINUTES = 60;
 const EMPLOYEE_SLEEP_MINUTES = 240;
-const EMPLOYEE_MEAL_COST_NO_GARAGE = 150;
-const EMPLOYEE_SLEEP_COST_NO_GARAGE = 400;
+const EMPLOYEE_HOSTEL_COST = 500;
+const EMPLOYEE_FUEL_SAFETY_MARGIN = 1.2;
 const EMPLOYEE_STATUS_LABEL = {
   afk: '🔴 АФК (за свой счёт)',
   idle: '🟢 Свободен, ищет заказ',
   moving: '🟢 В пути',
   eating: '🟢 Ест (за счёт компании)',
   resting: '🟢 Отдыхает (за счёт компании)',
+  refueling: '🟢 Заправляется (за счёт компании)',
   training: '🎓 На курсах повышения категории',
 };
 
@@ -1324,6 +1395,84 @@ function findJobForEmployee(emp) {
   return best;
 }
 
+function buildEmployeeActivity(path, targetId, phase, job) {
+  const cum = pathCumulativeKm(path);
+  return { path, cum, totalKm: cum[cum.length - 1], traveledKm: 0, nodeIndex: 0, targetId, phase, job: job || null };
+}
+
+// Nearest company garage by real road distance — used when an employee needs
+// to be routed there (going AFK, or the manual "send to garage" action).
+// Returns a ready-to-use activity object, or null if no garage is owned yet.
+function nearestGarageActivity(emp) {
+  const ownedCities = Object.keys(state.company.garages).filter(cid => hasGarageInCity(cid));
+  if (ownedCities.length === 0) return null;
+  let best = null, bestDist = Infinity;
+  ownedCities.forEach(cid => {
+    const targetId = `${cid}:garage`;
+    const path = shortestPath(emp.positionId, targetId);
+    const d = pathDistanceKm(path);
+    if (d < bestDist) { bestDist = d; best = buildEmployeeActivity(path, targetId, 'to_garage', null); }
+  });
+  return best;
+}
+
+function beginEmployeeRefuel(emp, veh, spec, free) {
+  const missing = spec.tank - veh.fuel;
+  if (!free) state.money -= Math.round(missing * FUEL_COST_PER_KM_RANGE[spec.fuel]);
+  emp.pendingActivity = emp.activity; emp.activity = null;
+  emp.status = 'refueling';
+  emp.taskElapsed = 0;
+  emp.taskTotal = Math.max(2, Math.round((missing / spec.tank) * REFUEL_MINUTES_FULL));
+}
+function beginEmployeeEat(emp, free) {
+  if (!free) state.money -= EAT_PRICE_CAFE.meal;
+  emp.pendingActivity = emp.activity; emp.activity = null;
+  emp.status = 'eating'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_EAT_MINUTES;
+}
+function beginEmployeeSleep(emp, free) {
+  if (!free) state.money -= EMPLOYEE_HOSTEL_COST;
+  emp.pendingActivity = emp.activity; emp.activity = null;
+  emp.status = 'resting'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_SLEEP_MINUTES;
+}
+function resumeEmployeeActivity(emp) {
+  if (emp.pendingActivity) { emp.activity = emp.pendingActivity; emp.pendingActivity = null; emp.status = 'moving'; }
+  else emp.status = 'idle';
+}
+
+// Called at every node the employee reaches along its route (remainingKm is
+// the distance still left in the CURRENT leg, or null when just standing
+// idle deciding what to do next). Returns true if a stop was started.
+function tryStopAtNode(emp, spec, veh, nodeId, remainingKm) {
+  const pt = pointById(nodeId);
+  if (!pt) return false;
+  const citySpace = pointSpace(nodeId);
+  // "home" is the PLAYER's own house, not a company facility — only an owned
+  // garage is free for an employee's vehicle (this function is never called
+  // for foot employees, who get their own separate, always-free, always-at-
+  // home-conceptually handling in runEmployeeTick).
+  const isGarage = pt.type === 'garage' && hasGarageInCity(citySpace);
+  const isFuelStop = pt.type === 'gas' || pt.type === 'waystop';
+
+  if (spec.fuel !== 'legs') {
+    const forwardNeed = remainingKm !== null && veh.fuel < remainingKm * EMPLOYEE_FUEL_SAFETY_MARGIN;
+    const opportunistic = remainingKm === null && veh.fuel < spec.tank * 0.5;
+    if (forwardNeed || opportunistic) {
+      if (isFuelStop) { beginEmployeeRefuel(emp, veh, spec, false); return true; }
+      if (isGarage && spec.fuel === 'electric') { beginEmployeeRefuel(emp, veh, spec, true); return true; }
+    }
+  }
+  if (emp.hunger >= EMPLOYEE_EAT_THRESHOLD) {
+    if (isGarage) { beginEmployeeEat(emp, true); return true; }
+    if (pt.type === 'cafe' || isFuelStop) { beginEmployeeEat(emp, false); return true; }
+  }
+  if (emp.sleepiness >= EMPLOYEE_SLEEP_THRESHOLD) {
+    if (vehicleCanSleepIn(spec)) { beginEmployeeSleep(emp, true); return true; } // pulls over, sleeps in the cab
+    if (isGarage) { beginEmployeeSleep(emp, true); return true; }
+    beginEmployeeSleep(emp, false); return true; // last resort: a cheap room nearby, on the company
+  }
+  return false;
+}
+
 function runEmployeeTick(emp, dt) {
   if (emp.status === 'training') {
     emp.trainingRemaining = Math.max(0, emp.trainingRemaining - dt);
@@ -1340,30 +1489,54 @@ function runEmployeeTick(emp, dt) {
 
   const spec = VEHICLE_BY_ID[emp.vehicleType];
   if (!spec) { emp.status = 'afk'; emp.working = false; return; }
+  const veh = state.player.vehicles.find(v => v.type === emp.vehicleType);
+  if (!veh) { emp.status = 'afk'; emp.working = false; emp.vehicleType = null; emp.activity = null; return; }
+  const isFoot = spec.cat === 'foot';
 
   if (emp.status === 'eating') {
     emp.taskElapsed += dt;
-    if (emp.taskElapsed >= emp.taskTotal) { emp.hunger = 10; emp.status = 'idle'; }
+    if (emp.taskElapsed >= emp.taskTotal) { emp.hunger = 10; resumeEmployeeActivity(emp); }
     return;
   }
   if (emp.status === 'resting') {
     emp.taskElapsed += dt;
-    if (emp.taskElapsed >= emp.taskTotal) { emp.sleepiness = 10; emp.status = 'idle'; }
+    if (emp.taskElapsed >= emp.taskTotal) { emp.sleepiness = 10; resumeEmployeeActivity(emp); }
+    return;
+  }
+  if (emp.status === 'refueling') {
+    emp.taskElapsed += dt;
+    if (emp.taskElapsed >= emp.taskTotal) { veh.fuel = spec.tank; resumeEmployeeActivity(emp); }
     return;
   }
 
   if (emp.status === 'moving' && emp.activity) {
     const a = emp.activity;
-    const kmThisTick = spec.speed * (dt / 60);
+    const outOfFuel = !isFoot && spec.fuel !== 'legs' && veh.fuel <= 0;
+    const kmThisTick = spec.speed * (outOfFuel ? 0.2 : 1) * (dt / 60);
     a.traveledKm = clamp(a.traveledKm + kmThisTick, 0, a.totalKm);
     emp.hunger = clamp(emp.hunger + HUNGER_RATE_MOVING * dt, 0, 100);
     emp.sleepiness = clamp(emp.sleepiness + SLEEPINESS_RATE * dt, 0, 100);
+    if (!isFoot && spec.fuel !== 'legs') veh.fuel = clamp(veh.fuel - kmThisTick, 0, spec.tank);
+
+    if (!isFoot) {
+      // A save from before this per-node tracking existed (or a plan that
+      // otherwise lost it) won't have cum/nodeIndex — rebuild rather than
+      // silently skip every stop-check for the rest of the trip.
+      if (!Array.isArray(a.cum)) { a.cum = pathCumulativeKm(a.path); a.nodeIndex = 0; }
+      while (a.nodeIndex < a.path.length - 1 && a.cum[a.nodeIndex + 1] <= a.traveledKm + 0.0001) {
+        a.nodeIndex++;
+        emp.positionId = a.path[a.nodeIndex]; // physically there now, whether or not he stops
+        const remainingKm = a.totalKm - a.cum[a.nodeIndex];
+        if (remainingKm > 0.01 && tryStopAtNode(emp, spec, veh, a.path[a.nodeIndex], remainingKm)) return;
+      }
+    }
+
     if (a.traveledKm >= a.totalKm) {
       emp.positionId = a.targetId;
       if (a.phase === 'to_pickup') {
         const path = shortestPath(a.job.fromId, a.job.toId);
-        emp.activity = { path, totalKm: pathDistanceKm(path), traveledKm: 0, targetId: a.job.toId, phase: 'to_dropoff', job: a.job };
-      } else {
+        emp.activity = buildEmployeeActivity(path, a.job.toId, 'to_dropoff', a.job);
+      } else if (a.phase === 'to_dropoff') {
         const payout = a.job.payout;
         const half = Math.round(payout / 2);
         state.money += half;
@@ -1371,6 +1544,10 @@ function runEmployeeTick(emp, dt) {
         log(`${emp.name} доставил «${a.job.itemName}» (${pointFullLabel(a.job.fromId)} → ${pointFullLabel(a.job.toId)}) — компании ${half} ₽, сотруднику ${payout - half} ₽`);
         emp.activity = null;
         emp.status = 'idle';
+      } else { // to_garage
+        emp.activity = null;
+        emp.status = 'afk';
+        log(`${emp.name} добрался до гаража компании и ушёл в АФК`, { silent: true });
       }
     }
     return;
@@ -1379,17 +1556,19 @@ function runEmployeeTick(emp, dt) {
   // status === 'idle': not currently on a job — decide what to do next
   emp.hunger = clamp(emp.hunger + HUNGER_RATE_IDLE * dt, 0, 100);
   emp.sleepiness = clamp(emp.sleepiness + SLEEPINESS_RATE * dt, 0, 100);
-  if (!emp.working) { emp.status = 'afk'; return; }
 
-  const hasGarage = hasGarageInCity(pointSpace(emp.positionId));
-  if (emp.hunger >= EMPLOYEE_EAT_THRESHOLD) {
-    if (!hasGarage) state.money -= EMPLOYEE_MEAL_COST_NO_GARAGE;
-    emp.status = 'eating'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_EAT_MINUTES;
+  if (!emp.working) {
+    if (isFoot) { emp.status = 'afk'; return; } // just heads home, abstracted
+    const garageActivity = nearestGarageActivity(emp);
+    if (garageActivity && garageActivity.totalKm > 0.01) { emp.activity = garageActivity; emp.status = 'moving'; }
+    else emp.status = 'afk'; // already there, or no garage owned at all
     return;
   }
-  if (emp.sleepiness >= EMPLOYEE_SLEEP_THRESHOLD) {
-    if (!hasGarage) state.money -= EMPLOYEE_SLEEP_COST_NO_GARAGE;
-    emp.status = 'resting'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_SLEEP_MINUTES;
+
+  if (isFoot) {
+    if (emp.hunger >= EMPLOYEE_EAT_THRESHOLD) { emp.status = 'eating'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_EAT_MINUTES; return; }
+    if (emp.sleepiness >= EMPLOYEE_SLEEP_THRESHOLD) { emp.status = 'resting'; emp.taskElapsed = 0; emp.taskTotal = EMPLOYEE_SLEEP_MINUTES; return; }
+  } else if (tryStopAtNode(emp, spec, veh, emp.positionId, null)) {
     return;
   }
 
@@ -1398,7 +1577,7 @@ function runEmployeeTick(emp, dt) {
     const idx = state.availableJobs.findIndex(j => j.id === job.id);
     if (idx !== -1) state.availableJobs.splice(idx, 1);
     const path = shortestPath(emp.positionId, job.fromId);
-    emp.activity = { path, totalKm: pathDistanceKm(path), traveledKm: 0, targetId: job.fromId, phase: 'to_pickup', job };
+    emp.activity = buildEmployeeActivity(path, job.fromId, 'to_pickup', job);
     emp.status = 'moving';
     log(`${emp.name} взял заказ «${job.itemName}» (${pointFullLabel(job.fromId)} → ${pointFullLabel(job.toId)})`, { silent: true });
   }
@@ -1451,6 +1630,11 @@ function migrateEconomyFields() {
   // A save from before the autonomous work loop existed could have employees
   // hired but missing every field that loop depends on — back-fill rather
   // than let runEmployeeTick crash on a missing status/position.
+  // A save from before garages tracked capacity had `garages[cityId] === true`
+  // — upgrade it in place rather than break hasGarageInCity/garageCapacity.
+  Object.keys(state.company.garages).forEach(cityId => {
+    if (state.company.garages[cityId] === true) state.company.garages[cityId] = { capacity: GARAGE_DEFAULT_CAPACITY };
+  });
   state.company.employees.forEach(emp => {
     if (typeof emp.working !== 'boolean') emp.working = false;
     if (!emp.status) emp.status = 'afk';
@@ -1458,11 +1642,16 @@ function migrateEconomyFields() {
     if (typeof emp.hunger !== 'number') emp.hunger = 30;
     if (typeof emp.sleepiness !== 'number') emp.sleepiness = 20;
     if (emp.activity === undefined) emp.activity = null;
+    if (emp.pendingActivity === undefined) emp.pendingActivity = null;
     if (typeof emp.earnings !== 'number') emp.earnings = 0;
     if (typeof emp.taskElapsed !== 'number') emp.taskElapsed = 0;
     if (typeof emp.taskTotal !== 'number') emp.taskTotal = 0;
     if (typeof emp.trainingRemaining !== 'number') emp.trainingRemaining = 0;
     if (emp.trainingTarget === undefined) emp.trainingTarget = null;
+    if (typeof emp.usesGarageSlot !== 'boolean') {
+      const s = VEHICLE_BY_ID[emp.vehicleType];
+      emp.usesGarageSlot = s ? s.cat !== 'foot' : false;
+    }
   });
   if (typeof state.autoPlay !== 'boolean') state.autoPlay = true;
   if (typeof state.player.sleepiness !== 'number') state.player.sleepiness = 15;
@@ -1891,7 +2080,7 @@ function startEating(optionId) {
   const point = pointById(p.positionId);
   const isHome = point.type === 'home';
   const isCompanyGarage = point.type === 'garage' && hasGarageInCity(pointSpace(point.id));
-  const canEatHere = isHome || isCompanyGarage || point.type === 'cafe' || point.type === 'waystop';
+  const canEatHere = isHome || isCompanyGarage || point.type === 'cafe' || point.type === 'waystop' || point.type === 'gas';
   if (!canEatHere) return;
   if (!isPointOpenNow(point)) { toast('Закрыто — придётся подождать открытия'); return; }
   const opt = EAT_OPTIONS.find(o => o.id === optionId);
@@ -3419,7 +3608,7 @@ function renderPointPanel() {
   if (point.type === 'shop') { addBtn('Открыть магазин', () => openShop(true), !openNow); }
   if (point.type === 'workshop') { addBtn('Открыть мастерскую', () => openWorkshop(), !openNow); }
 
-  if (point.type === 'cafe' || point.type === 'waystop') {
+  if (point.type === 'cafe' || point.type === 'waystop' || point.type === 'gas') {
     EAT_OPTIONS.forEach(opt => {
       const cost = EAT_PRICE_CAFE[opt.id];
       addBtn(`${opt.label} — ${cost} ₽`, () => { startEating(opt.id); renderAll(); }, state.money < cost || !openNow);
@@ -3963,7 +4152,7 @@ function renderCompanyMain(box) {
   const navRow = document.createElement('div');
   navRow.className = 'company-nav-row';
   const staffBtn = document.createElement('button');
-  staffBtn.textContent = `👥 Сотрудники (${state.company.employees.length})`;
+  staffBtn.textContent = `👥 Сотрудники (${state.company.employees.length}) — мест: ${garageSlotsUsed()}/${totalGarageCapacity()}`;
   staffBtn.onclick = () => { companyView = { mode: 'employees' }; renderCompanyContent(); };
   navRow.appendChild(staffBtn);
   box.appendChild(navRow);
@@ -3973,7 +4162,7 @@ function renderCompanyMain(box) {
   box.appendChild(garageHeading);
   const garageHint = document.createElement('p');
   garageHint.className = 'hint';
-  garageHint.textContent = 'В каждом городе есть один участок под гараж компании — бесплатные еда, сон, ремонт и зарядка электротранспорта для тебя и сотрудников.';
+  garageHint.textContent = 'В каждом городе есть один участок под гараж компании — бесплатные еда, сон, ремонт и зарядка электротранспорта для тебя и сотрудников. Каждый гараж даёт ограниченное число мест для сотрудников (кроме пеших — им гараж не нужен); места можно расширять.';
   box.appendChild(garageHint);
 
   const garageList = document.createElement('ul');
@@ -3988,7 +4177,7 @@ function renderCompanyMain(box) {
     icon.textContent = '🅿️';
     const info = document.createElement('div');
     info.className = 'garage-info';
-    info.innerHTML = `${owned ? '<span class="garage-badge">Куплен</span><br>' : ''}<b>${city.name}</b><div class="garage-sub">${TIER_LABEL[city.tier] || city.tier}</div>`;
+    info.innerHTML = `${owned ? `<span class="garage-badge">Мест: ${garageCapacity(city.id)}</span><br>` : ''}<b>${city.name}</b><div class="garage-sub">${TIER_LABEL[city.tier] || city.tier}</div>`;
     li.append(icon, info);
     if (!owned) {
       const buyBtn = document.createElement('button');
@@ -3997,6 +4186,14 @@ function renderCompanyMain(box) {
       buyBtn.disabled = state.money < cost;
       buyBtn.onclick = () => { buyGarage(city.id); renderCompanyContent(); renderAll(); };
       li.appendChild(buyBtn);
+    } else {
+      const expandCost = garageExpandCost(city.id);
+      const expandBtn = document.createElement('button');
+      expandBtn.className = 'garage-buy-btn';
+      expandBtn.textContent = `+1 место — ${expandCost.toLocaleString('ru-RU')} ₽`;
+      expandBtn.disabled = state.money < expandCost;
+      expandBtn.onclick = () => { expandGarage(city.id); renderCompanyContent(); renderAll(); };
+      li.appendChild(expandBtn);
     }
     garageList.appendChild(li);
   });
@@ -4067,15 +4264,19 @@ function renderHireScreen(box) {
     return;
   }
 
+  const slotsFree = garageSlotsAvailable() > 0;
   candidatePool.forEach((cand, idx) => {
     const card = document.createElement('div');
     card.className = 'candidate-card';
     card.innerHTML = `<b>${cand.name}</b><div class="job-sub">${LICENSE_LABEL[cand.license]}</div><div class="job-sub">Найм: ${cand.fee.toLocaleString('ru-RU')} ₽</div>`;
-    const eligible = eligibleVehiclesFor(cand.license);
+    // Foot vehicles don't need a garage slot at all — everything else does.
+    const eligible = eligibleVehiclesFor(cand.license).filter(v => VEHICLE_BY_ID[v.type].cat === 'foot' || slotsFree);
     if (eligible.length === 0) {
       const noVeh = document.createElement('div');
       noVeh.className = 'job-sub';
-      noVeh.textContent = 'Нет свободного подходящего транспорта в твоём гараже';
+      noVeh.textContent = eligibleVehiclesFor(cand.license).length === 0
+        ? 'Нет свободного подходящего транспорта в твоём гараже'
+        : 'Нет свободных мест в гаражах для этого транспорта';
       card.appendChild(noVeh);
     } else {
       const select = document.createElement('select');
@@ -4111,11 +4312,15 @@ function renderEmployeeDetail(box, employeeId) {
   heading.textContent = emp.name;
   box.appendChild(heading);
 
+  const vehInstance = emp.vehicleType ? state.player.vehicles.find(v => v.type === emp.vehicleType) : null;
+  const fuelLine = (vehInstance && vehSpec && vehSpec.fuel !== 'legs')
+    ? `<div class="job-sub">Топливо: ${Math.round(vehInstance.fuel)}/${vehSpec.tank} км хода</div>` : '';
   const info = document.createElement('div');
   info.innerHTML = `
     <div class="job-sub">${EMPLOYEE_STATUS_LABEL[emp.status] || emp.status}${emp.status === 'training' ? ` — осталось ${formatMinutesDuration(emp.trainingRemaining)}` : ''}</div>
     <div class="job-sub">${LICENSE_LABEL[emp.license]}</div>
     <div class="job-sub">Транспорт: ${vehSpec ? vehSpec.name : '— нет транспорта'}</div>
+    ${fuelLine}
     <div class="job-sub">Сытость: ${Math.round(emp.hunger)}% · Сон: ${Math.round(emp.sleepiness)}%</div>
     <div class="job-sub">Где сейчас: ${pointFullLabel(emp.positionId)}</div>
     <div class="job-sub">Заработал сотруднику: ${Math.round(emp.earnings || 0).toLocaleString('ru-RU')} ₽</div>
@@ -4169,11 +4374,16 @@ function renderEmployeeDetail(box, employeeId) {
     box.appendChild(noVeh);
   }
 
+  const isFootEmployee = vehSpec && vehSpec.cat === 'foot';
   const ownedGarageCities = COUNTRY_CITIES.filter(c => hasGarageInCity(c.id));
-  if (ownedGarageCities.length > 0) {
+  if (!isFootEmployee && ownedGarageCities.length > 0) {
     const garageHeading = document.createElement('h3');
     garageHeading.textContent = 'Отправить в гараж';
     box.appendChild(garageHeading);
+    const garageTripHint = document.createElement('p');
+    garageTripHint.className = 'hint';
+    garageTripHint.textContent = 'Едет туда своим ходом (реально, не телепортом) и по пути сам заедет заправиться/поесть/поспать, если понадобится.';
+    box.appendChild(garageTripHint);
     const gSelect = document.createElement('select');
     gSelect.className = 'hire-select';
     ownedGarageCities.forEach(c => {
@@ -4184,8 +4394,8 @@ function renderEmployeeDetail(box, employeeId) {
     });
     box.appendChild(gSelect);
     const gBtn = document.createElement('button');
-    gBtn.textContent = '🅿️ Отправить в гараж (уйдёт в АФК)';
-    gBtn.disabled = !free;
+    gBtn.textContent = '🅿️ Отправить в гараж (своим ходом, уйдёт в АФК по прибытии)';
+    gBtn.disabled = !free || !emp.vehicleType;
     gBtn.onclick = () => { sendEmployeeToGarage(emp.id, gSelect.value); renderCompanyContent(); renderAll(); };
     box.appendChild(gBtn);
   }
