@@ -3542,7 +3542,13 @@ function renderPointPanel() {
   const point = visible ? pointById(uiSelectedPointId) : null;
   const p = state ? state.player : null;
   const collapseTag = p && p.status === 'collapsed' ? Math.ceil(p.collapseRemaining) : 'x';
-  const signature = visible ? `${uiSelectedPointId}|${p.positionId}|${p.status}|${collapseTag}|${p.jobs.map(j => j.id + ':' + j.pickedUp).join(',')}|${point && isPointOpenNow(point)}` : 'hidden';
+  const openNowTag = point && isPointOpenNow(point);
+  // While closed, the "opens in X" countdown has to be part of the signature
+  // too — otherwise it's computed once when the panel first opens and never
+  // again (the point stays "closed" the whole time, so nothing else here
+  // changes), making the timer look frozen instead of counting down.
+  const closedCountdownTag = point && !openNowTag ? Math.ceil(minutesUntilOpen(point)) : 'x';
+  const signature = visible ? `${uiSelectedPointId}|${p.positionId}|${p.status}|${collapseTag}|${p.jobs.map(j => j.id + ':' + j.pickedUp).join(',')}|${openNowTag}|${closedCountdownTag}` : 'hidden';
   if (signature === lastPointPanelSignature) return;
   lastPointPanelSignature = signature;
 
@@ -4030,7 +4036,11 @@ function openShop(resetVehicleView) {
   const citySpace = pointSpace(state.player.positionId);
   const tier = SETTLEMENT_TIER[citySpace] || 'village';
   const cityName = cityMeta(citySpace) ? cityMeta(citySpace).name : '';
-  const allowedCats = TIER_SHOP_CATEGORIES[tier];
+  // Rivnoe is the one city always reachable before the company is registered
+  // — and registering one requires owning a car. A plain village shop never
+  // stocks cars, which would make that requirement impossible to ever meet,
+  // so Rivnoe specifically carries entry-level cars too as a bootstrap.
+  const allowedCats = citySpace === COMPANY_HOME_CITY ? [...TIER_SHOP_CATEGORIES.village, 'car'] : TIER_SHOP_CATEGORIES[tier];
   el('shop-subtitle').textContent = `${cityName} (${TIER_LABEL[tier]}) — ассортимент зависит от размера города`;
   const list = el('shop-list');
   list.innerHTML = '';
